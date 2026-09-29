@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/* Calm graphite theme: flat surfaces, soft text, muted colour. No glow, gradients or motion. */
+:root {
+  --background: #121316;
+  --surface-1: #181a1e;
+  --surface-2: #1e2025;
+  --foreground: #e8e8e4;
+  --text-2: #bdbdb8;
+  --text-3: #9a9ca3;
+  --text-4: #73757c;
+  --accent: #9fb4ee;
+  --accent-hover: #b6c6f3;
+  --brand: #6b86d6;
+  --cyan: #7cb6d6;
+  --magenta: #c87aa8;
+  --border: rgba(255, 255, 255, 0.10);
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --green: #5fbf9a;
+  --red: #e5787f;
+  --gold: #d4b063;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+html {
+  font-feature-settings: "cv01", "ss03";
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  color-scheme: dark;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { letter-spacing: -0.015em; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  border: 2px solid var(--background);
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); }
+
+::selection {
+  background-color: rgba(107, 134, 214, 0.40);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(159, 180, 238, 0.7);
+  outline-offset: 2px;
+}
+
+/* ---------- shared components ---------- */
+
+.pm-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  transition: border-color .15s ease;
+}
+.pm-card:hover { border-color: var(--border); }
+
+.pm-panel {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.pm-table th {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.pm-table td { font-variant-numeric: tabular-nums; }
+
+/* live dot: static, no ring animation */
+.pulse-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 9999px;
+  background: var(--green);
+}
+
+.shimmer { background: rgba(255, 255, 255, 0.05); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

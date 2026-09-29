@@ -1,0 +1,50 @@
+# dependencies
+/node_modules
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.zip
+
+# debug
+npm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# database (settings, alert rules, bot ledger) and the local bot encryption key
+*.db
+*.db-shm
+*.db-wal
+*.bot-key
+
+# Jev runtime generated files & history
+/jev/*
+!/jev/.gitkeep
+/public/jev/*
+!/public/jev/.gitkeep
+
+# Up/Down per-minute tick recorder output (src/lib/updownRecorder.ts)
+/ticks/
+
+# supervisor (scripts/supervisor.ts)
+/logs/
+/.supervisor-token
+
+# tooling
+.playwright-mcp/
