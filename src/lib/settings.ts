@@ -25,7 +25,7 @@ export interface Settings {
   'watchdog.telegramToken': string;
   'watchdog.telegramChat': string;
   'jev.coins': JevCoin[];
-  'jev.models': { jev: boolean; kev: boolean; span: boolean; solar: boolean };
+  'jev.models': { jev: boolean; kev: boolean; span: boolean; solar: boolean; tev: boolean; mercury: boolean };
   'jev.recordIntervalSec': number;
   'jev.snapshotIntervalSec': number;
   'alerts.intervalSec': number;
@@ -44,6 +44,9 @@ export interface Settings {
   'bot.rpcUrl': string;
   'bot.maxBudget': number;
   'bot.perTradeAmount': number;
+  'bot.orderPriceMode': 'slippage' | 'market';
+  'bot.slippageCents': number;
+  'bot.maxAttempts': number;
   'bot.telegramToken': string;
   'bot.telegramChatId': string;
 }
@@ -134,10 +137,10 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
     },
     restarts: ['jev'],
   },
-  // A value saved before Solar existed has no `solar` key: treat it as on instead of discarding the setting.
+  // A value saved before Solar, Tev or Mercury existed has no such key: treat it as on instead of discarding the setting.
   'jev.models': {
-    default: { jev: true, kev: true, span: true, solar: true },
-    parse: v => flags(['jev', 'kev', 'span', 'solar'] as const, true)(v && typeof v === 'object' ? { solar: true, ...v } : v),
+    default: { jev: true, kev: true, span: true, solar: true, tev: true, mercury: true },
+    parse: v => flags(['jev', 'kev', 'span', 'solar', 'tev', 'mercury'] as const, true)(v && typeof v === 'object' ? { solar: true, tev: true, mercury: true, ...v } : v),
     restarts: ['jev'],
   },
   'jev.recordIntervalSec': { default: 300, parse: intRange(60, 3600), restarts: ['jev'] },
@@ -201,6 +204,18 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
   },
   'bot.maxBudget': { default: 100, parse: numRange(1, 100_000), restarts: [] },
   'bot.perTradeAmount': { default: 10, parse: numRange(1, 100_000), restarts: [] },
+  // How the buy order is priced: best ask + slippage (a hard worst price), or market (sweep the book up to 0.99).
+  'bot.orderPriceMode': {
+    default: 'slippage',
+    parse: v => {
+      if (v !== 'slippage' && v !== 'market') throw new SettingError('must be slippage or market');
+      return v;
+    },
+    restarts: [],
+  },
+  'bot.slippageCents': { default: 2, parse: intRange(0, 20), restarts: [] },
+  // Buy attempts per signal. Each retry re-reads the book and signs a fresh order; only a definite non-fill is retried.
+  'bot.maxAttempts': { default: 3, parse: intRange(1, 10), restarts: [] },
   'bot.telegramToken': {
     secret: true,
     env: ['TRADER_TELEGRAM_BOT_TOKEN', 'POLYMARKET_BOT_TELEGRAM_TOKEN', 'JEV_TELEGRAM_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN'],

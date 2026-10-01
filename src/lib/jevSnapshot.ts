@@ -253,11 +253,15 @@ export async function callJevDecision(snapshotData: any, apiKey?: string) {
 
 export const KEV_MODEL = 'jaredpalmer/kev-4b';
 export const SOLAR_MODEL = 'upstage/solar-decide';
+export const TEV_MODEL = 'togethercomputer/tev1-4b-experimental';
+export const MERCURY_MODEL = 'inception/mercury-decide:free';
 
 export const callKevDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(KEV_MODEL, 'Kev', snapshotData, apiKey);
 export const callSolarDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(SOLAR_MODEL, 'Solar', snapshotData, apiKey);
+export const callTevDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(TEV_MODEL, 'Tev', snapshotData, apiKey);
+export const callMercuryDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(MERCURY_MODEL, 'Mercury', snapshotData, apiKey);
 
-/** Kev and Solar take the same score + direction questions and return the same answer shape. */
+/** Kev, Solar, Tev and Mercury take the same score + direction questions and return the same answer shape. */
 async function callStandardDecision(modelId: string, label: string, snapshotData: any, apiKey?: string) {
   const key = openRouterKey(apiKey);
   const coinLabel = snapshotData.coin_label || snapshotData.coin || 'Crypto';
@@ -473,11 +477,13 @@ export async function callSpanDecision(snapshotData: any, apiKey?: string) {
 export async function callMultiModelDecisions(snapshotData: any, apiKey?: string) {
   const enabled = getSetting('jev.models');
   const off = Promise.resolve(null);
-  const [jevRes, kevRes, spanRes, solarRes] = await Promise.allSettled([
+  const [jevRes, kevRes, spanRes, solarRes, tevRes, mercuryRes] = await Promise.allSettled([
     enabled.jev ? callJevDecision(snapshotData, apiKey) : off,
     enabled.kev ? callKevDecision(snapshotData, apiKey) : off,
     enabled.span ? callSpanDecision(snapshotData, apiKey) : off,
     enabled.solar ? callSolarDecision(snapshotData, apiKey) : off,
+    enabled.tev ? callTevDecision(snapshotData, apiKey) : off,
+    enabled.mercury ? callMercuryDecision(snapshotData, apiKey) : off,
   ]);
 
   const jev = jevRes.status === 'fulfilled' ? jevRes.value : null;
@@ -488,6 +494,15 @@ export async function callMultiModelDecisions(snapshotData: any, apiKey?: string
   const solar = solarRes.status === 'fulfilled' ? solarRes.value : null;
   if (solarRes.status === 'rejected') {
     console.error('[MultiModel] Solar error:', solarRes.reason?.message || solarRes.reason);
+  }
+  // Tev and Mercury follow Solar: recorded for analysis, never a consensus vote.
+  const tev = tevRes.status === 'fulfilled' ? tevRes.value : null;
+  if (tevRes.status === 'rejected') {
+    console.error('[MultiModel] Tev error:', tevRes.reason?.message || tevRes.reason);
+  }
+  const mercury = mercuryRes.status === 'fulfilled' ? mercuryRes.value : null;
+  if (mercuryRes.status === 'rejected') {
+    console.error('[MultiModel] Mercury error:', mercuryRes.reason?.message || mercuryRes.reason);
   }
 
   if (jevRes.status === 'rejected') {
@@ -526,6 +541,8 @@ export async function callMultiModelDecisions(snapshotData: any, apiKey?: string
     kev,
     span,
     solar,
+    tev,
+    mercury,
     consensus,
     primary,
   };
@@ -578,6 +595,8 @@ export function saveHistoricalJevRecord(
       kev: predictionOrMulti.kev,
       span: predictionOrMulti.span,
       solar: predictionOrMulti.solar,
+      tev: predictionOrMulti.tev,
+      mercury: predictionOrMulti.mercury,
       consensus: predictionOrMulti.consensus,
     };
     primaryPrediction = predictionOrMulti.primary || predictionOrMulti.jev || primaryPrediction;

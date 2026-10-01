@@ -868,6 +868,8 @@ export default function CloudAnalysisPage() {
                 { value: "kev", label: "Kev" },
                 { value: "span", label: "Span" },
                 { value: "solar", label: "Solar" },
+                { value: "tev", label: "Tev" },
+                { value: "mercury", label: "Mercury" },
                 { value: "avg", label: "Avg of 3", title: "Average of the three scores; confidence = agreement %" },
               ]}
             />

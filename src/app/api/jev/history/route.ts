@@ -75,6 +75,8 @@ export async function GET(req: Request) {
         const pKev = preds.kev || null;
         const pSpan = preds.span || null;
         const pSolar = preds.solar || null;
+        const pTev = preds.tev || null;
+        const pMercury = preds.mercury || null;
         const pct = (x: unknown) => (x != null ? Number((Number(x) * 100).toFixed(0)) : null);
         const consensus = preds.consensus || null;
         const cards = content.cards || {};
@@ -150,6 +152,23 @@ export async function GET(req: Request) {
           solar_direction_confidence: pct(pSolar?.direction_confidence ?? pSolar?.raw_decision?.answers?.one_hour_direction?.confidence),
           solar_confidence: pct(pSolar?.score_confidence ?? pSolar?.direction_confidence),
           solar_prob_up: pSolar?.prob_up ?? null,
+
+          // Together Tev-4b and Inception Mercury-Decide predictions (extras, not part of the consensus)
+          tev_direction: pTev?.direction ?? null,
+          tev_score: pTev?.score != null ? Number(pTev.score) : null,
+          tev_score_label: pTev?.score_interpretation ?? null,
+          tev_score_confidence: pct(pTev?.score_confidence ?? pTev?.raw_decision?.answers?.one_hour_score?.confidence),
+          tev_direction_confidence: pct(pTev?.direction_confidence ?? pTev?.raw_decision?.answers?.one_hour_direction?.confidence),
+          tev_confidence: pct(pTev?.score_confidence ?? pTev?.direction_confidence),
+          tev_prob_up: pTev?.prob_up ?? null,
+
+          mercury_direction: pMercury?.direction ?? null,
+          mercury_score: pMercury?.score != null ? Number(pMercury.score) : null,
+          mercury_score_label: pMercury?.score_interpretation ?? null,
+          mercury_score_confidence: pct(pMercury?.score_confidence ?? pMercury?.raw_decision?.answers?.one_hour_score?.confidence),
+          mercury_direction_confidence: pct(pMercury?.direction_confidence ?? pMercury?.raw_decision?.answers?.one_hour_direction?.confidence),
+          mercury_confidence: pct(pMercury?.score_confidence ?? pMercury?.direction_confidence),
+          mercury_prob_up: pMercury?.prob_up ?? null,
 
           // Consensus
           consensus_direction: consensus?.direction ?? null,

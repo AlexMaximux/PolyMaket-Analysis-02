@@ -2,7 +2,7 @@
 // Pure functions only, so the page and the tests share one implementation.
 
 export type Dir = "UP" | "DOWN";
-export type ModelSource = "jev" | "kev" | "span" | "solar" | "avg";
+export type ModelSource = "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "avg";
 export type ConsensusRule = "none" | "2of3" | "3of3";
 export type DedupeMode = "all" | "firstPerHour" | "firstPerHourDir";
 // afterFilters: first snapshot of the hour that passes every filter becomes the trade.
@@ -32,6 +32,16 @@ export interface SnapshotRow {
   solar_confidence?: number | null;
   solar_score_confidence?: number | null;
   solar_direction_confidence?: number | null;
+  tev_direction?: Dir | null;
+  tev_score?: number | null;
+  tev_confidence?: number | null;
+  tev_score_confidence?: number | null;
+  tev_direction_confidence?: number | null;
+  mercury_direction?: Dir | null;
+  mercury_score?: number | null;
+  mercury_confidence?: number | null;
+  mercury_score_confidence?: number | null;
+  mercury_direction_confidence?: number | null;
   consensus_agreement?: number | null;
   up_1h_num?: number | null;
   market_slug?: string | null;
@@ -235,6 +245,16 @@ export function detectSignal(
     conf = cfg.confidenceType === "direction"
       ? r.solar_direction_confidence ?? r.solar_confidence
       : r.solar_score_confidence ?? r.solar_confidence;
+  } else if (cfg.model === "tev") {
+    score = r.tev_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.tev_direction_confidence ?? r.tev_confidence
+      : r.tev_score_confidence ?? r.tev_confidence;
+  } else if (cfg.model === "mercury") {
+    score = r.mercury_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.mercury_direction_confidence ?? r.mercury_confidence
+      : r.mercury_score_confidence ?? r.mercury_confidence;
   } else if (cfg.model === "avg") {
     const scores = [r.score, r.kev_score, r.span_score].filter((s): s is number => s != null);
     score = scores.length ? Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)) : null;

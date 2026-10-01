@@ -42,7 +42,7 @@ export interface SignalMarkerConfig {
   confidenceType: "score" | "direction" | "any";
   bullishColor: string;     // default "#6aa9d8"
   bearishColor: string;     // default "#d8646a"
-  modelSource?: "jev" | "kev" | "span" | "solar" | "consensus"; // Default "jev"
+  modelSource?: "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "consensus"; // Default "jev"
 }
 
 const DEFAULT_SIGNAL_CONFIG: SignalMarkerConfig = {
@@ -96,6 +96,18 @@ function evaluateSignal(r: JevFileRecord, cfg: SignalMarkerConfig): SignalMatch 
       ? r.solar_direction_confidence ?? r.solar_confidence
       : r.solar_score_confidence ?? r.solar_confidence;
     modelName = "Solar-Decide";
+  } else if (modelSrc === "tev") {
+    targetScore = r.tev_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.tev_direction_confidence ?? r.tev_confidence
+      : r.tev_score_confidence ?? r.tev_confidence;
+    modelName = "Tev-4b";
+  } else if (modelSrc === "mercury") {
+    targetScore = r.mercury_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.mercury_direction_confidence ?? r.mercury_confidence
+      : r.mercury_score_confidence ?? r.mercury_confidence;
+    modelName = "Mercury-Decide";
   } else if (modelSrc === "consensus") {
     const scores = [r.score, r.kev_score, r.span_score].filter((s): s is number => s != null);
     targetScore = scores.length > 0 ? Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)) : null;
@@ -200,6 +212,21 @@ interface JevFileRecord {
   solar_score_confidence?: number | null;
   solar_direction_confidence?: number | null;
   solar_prob_up?: number | null;
+  // Together Tev-4b and Inception Mercury-Decide (extras, not part of the 3-model consensus)
+  tev_direction?: "UP" | "DOWN" | null;
+  tev_score?: number | null;
+  tev_score_label?: string | null;
+  tev_confidence?: number | null;
+  tev_score_confidence?: number | null;
+  tev_direction_confidence?: number | null;
+  tev_prob_up?: number | null;
+  mercury_direction?: "UP" | "DOWN" | null;
+  mercury_score?: number | null;
+  mercury_score_label?: string | null;
+  mercury_confidence?: number | null;
+  mercury_score_confidence?: number | null;
+  mercury_direction_confidence?: number | null;
+  mercury_prob_up?: number | null;
   span_prob_up?: number | null;
   span_prob_down?: number | null;
 
@@ -796,6 +823,82 @@ const ALL_COLUMNS: ColumnDef[] = [
     exportVal: (r) => r.solar_score ?? "",
   },
   {
+    id: "tev_direction",
+    label: "سیگنال Tev-4b",
+    shortLabel: "سیگنال Tev",
+    category: "models",
+    render: (r) =>
+      r.tev_direction ? (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${
+            r.tev_direction === "UP"
+              ? "bg-[#4fb8b0]/20 text-[#4fb8b0] border border-[#4fb8b0]/30"
+              : "bg-[#e5787f]/20 text-[#e5787f] border border-[#e5787f]/30"
+          }`}
+        >
+          {r.tev_direction === "UP" ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          {r.tev_direction}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.tev_direction || "",
+  },
+  {
+    id: "tev_score",
+    label: "اسکور Tev-4b (0 - 4)",
+    shortLabel: "اسکور Tev",
+    category: "models",
+    render: (r) =>
+      r.tev_score != null ? (
+        <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold tabular-nums text-white">
+          {r.tev_score.toFixed(2)}
+          {r.tev_confidence != null && <span className="text-[10px] text-[#4fb8b0]">({r.tev_confidence}%)</span>}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.tev_score ?? "",
+  },
+  {
+    id: "mercury_direction",
+    label: "سیگنال Mercury-Decide",
+    shortLabel: "سیگنال Mercury",
+    category: "models",
+    render: (r) =>
+      r.mercury_direction ? (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${
+            r.mercury_direction === "UP"
+              ? "bg-[#9ccf6a]/20 text-[#9ccf6a] border border-[#9ccf6a]/30"
+              : "bg-[#e5787f]/20 text-[#e5787f] border border-[#e5787f]/30"
+          }`}
+        >
+          {r.mercury_direction === "UP" ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          {r.mercury_direction}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.mercury_direction || "",
+  },
+  {
+    id: "mercury_score",
+    label: "اسکور Mercury-Decide (0 - 4)",
+    shortLabel: "اسکور Mercury",
+    category: "models",
+    render: (r) =>
+      r.mercury_score != null ? (
+        <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold tabular-nums text-white">
+          {r.mercury_score.toFixed(2)}
+          {r.mercury_confidence != null && <span className="text-[10px] text-[#9ccf6a]">({r.mercury_confidence}%)</span>}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.mercury_score ?? "",
+  },
+  {
     id: "span_confidence",
     label: "اطمینان اسکور Span-01",
     shortLabel: "اطمینان Span",
@@ -1027,38 +1130,140 @@ const ALL_COLUMNS: ColumnDef[] = [
 const PRESETS = [
   {
     id: "multi_models",
-    title: "🤖 ۳ مدل هوش مصنوعی (Jev + Kev + Span)",
-    cols: ["coin", "consensus", "signal", "signal_result", "direction", "score", "kev_direction", "kev_score", "span_direction", "span_score", "solar_direction", "solar_score", "up_1h", "market_outcome"],
+    title: "All models",
+    cols: ["coin", "consensus", "signal", "signal_result", "direction", "score", "kev_direction", "kev_score", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "up_1h", "market_outcome"],
   },
   {
     id: "top3",
-    title: "🌟 شاخص‌های اصلی + ۳ مدل",
+    title: "Core",
     cols: ["coin", "consensus", "signal", "signal_result", "direction", "score", "kev_direction", "kev_score", "span_direction", "span_score", "solar_direction", "solar_score", "up_1h", "market_outcome"],
   },
   {
     id: "ai",
-    title: "🧠 مقایسه تفصیلی اسکور و اطمینان ۳ مدل",
+    title: "Confidence",
     cols: ["coin", "direction", "score", "score_confidence", "kev_direction", "kev_score", "kev_score_confidence", "kev_direction_confidence", "span_direction", "span_score", "solar_direction", "solar_score", "span_confidence"],
   },
   {
     id: "markets",
-    title: "📈 مقایسه ۳ تایم‌فریم بازار (1h / 15m / 5m)",
+    title: "Markets",
     cols: ["coin", "direction", "up_1h", "up_15m", "up_5m", "market_outcome"],
   },
   {
     id: "fair_values",
-    title: "🧮 مقایسه مدل‌های Fair Value",
+    title: "Fair value",
     cols: ["coin", "direction", "fair_15m", "fair_5m", "fair_joint"],
   },
   {
     id: "signals",
-    title: "🎯 تمرکز روی سیگنال‌ها و نتایج (برد / باخت)",
+    title: "Signals",
     cols: ["coin", "signal", "signal_result", "market_outcome", "direction", "score", "score_confidence", "up_1h"],
   },
   {
     id: "full",
-    title: "🔍 نمایش جامع (تمام شاخص‌های ۳ مدل + بازار)",
-    cols: ["coin", "consensus", "signal", "signal_result", "market_outcome", "direction", "score", "score_confidence", "kev_direction", "kev_score", "kev_score_confidence", "kev_direction_confidence", "span_direction", "span_score", "solar_direction", "solar_score", "span_confidence", "span_prob_up", "up_1h", "fair_15m"],
+    title: "Full",
+    cols: ["coin", "consensus", "signal", "signal_result", "market_outcome", "direction", "score", "score_confidence", "kev_direction", "kev_score", "kev_score_confidence", "kev_direction_confidence", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "span_confidence", "span_prob_up", "up_1h", "fair_15m"],
+  },
+];
+
+// Column picker layout: columns grouped by AI model. Display only; ColumnDef.label stays as-is for headers/exports.
+const COLUMN_GROUPS: { id: string; title: string; dot: string; cols: [string, string][] }[] = [
+  {
+    id: "general",
+    title: "General",
+    dot: "#bdbdb8",
+    cols: [
+      ["coin", "Coin"],
+      ["consensus", "3-model consensus"],
+      ["signal", "Signal marker"],
+      ["signal_result", "Signal win/loss"],
+      ["market_outcome", "Market outcome"],
+    ],
+  },
+  {
+    id: "jev",
+    title: "Jev",
+    dot: "#6aa9d8",
+    cols: [
+      ["direction", "Direction"],
+      ["score", "Score"],
+      ["prob_up", "Prob UP"],
+      ["score_confidence", "Score conf."],
+      ["direction_confidence", "Direction conf."],
+      ["confidence", "Overall conf."],
+      ["tokens", "Tokens / cost"],
+    ],
+  },
+  {
+    id: "kev",
+    title: "Kev-4b",
+    dot: "#a795d6",
+    cols: [
+      ["kev_direction", "Direction"],
+      ["kev_score", "Score"],
+      ["kev_prob_up", "Prob UP"],
+      ["kev_score_confidence", "Score conf."],
+      ["kev_direction_confidence", "Direction conf."],
+      ["kev_confidence", "Overall conf."],
+    ],
+  },
+  {
+    id: "span",
+    title: "Span-01",
+    dot: "#d68aa8",
+    cols: [
+      ["span_direction", "Direction"],
+      ["span_score", "Score"],
+      ["span_prob_up", "Prob UP"],
+      ["span_confidence", "Confidence"],
+    ],
+  },
+  {
+    id: "solar",
+    title: "Solar-Decide",
+    dot: "#d49a4a",
+    cols: [
+      ["solar_direction", "Direction"],
+      ["solar_score", "Score"],
+    ],
+  },
+  {
+    id: "tev",
+    title: "Tev-4b",
+    dot: "#4fb8b0",
+    cols: [
+      ["tev_direction", "Direction"],
+      ["tev_score", "Score"],
+    ],
+  },
+  {
+    id: "mercury",
+    title: "Mercury-Decide",
+    dot: "#9ccf6a",
+    cols: [
+      ["mercury_direction", "Direction"],
+      ["mercury_score", "Score"],
+    ],
+  },
+  {
+    id: "market",
+    title: "Polymarket",
+    dot: "#5fbf9a",
+    cols: [
+      ["up_1h", "1H Up"],
+      ["up_15m", "15M Up"],
+      ["up_5m", "5M Up"],
+    ],
+  },
+  {
+    id: "fair",
+    title: "Fair value",
+    dot: "#9fb4ee",
+    cols: [
+      ["fair_15m", "15m"],
+      ["fair_5m", "5m"],
+      ["fair_joint", "Joint solve"],
+      ["fair_base", "Base (no drift)"],
+    ],
   },
 ];
 
@@ -1379,6 +1584,17 @@ export default function JevAnalysisPage() {
     } finally {
       setFileLoading(false);
     }
+  };
+
+  const toggleColumnGroup = (ids: string[]) => {
+    setSelectedColIds((prev) => {
+      const allOn = ids.every((id) => prev.includes(id));
+      if (allOn) {
+        const rest = prev.filter((c) => !ids.includes(c));
+        return rest.length ? rest : prev;
+      }
+      return [...prev, ...ids.filter((id) => !prev.includes(id))];
+    });
   };
 
   const toggleColumn = (id: string) => {
@@ -2737,7 +2953,7 @@ export default function JevAnalysisPage() {
                       onChange={(e) =>
                         setSignals((p) => ({
                           ...p,
-                          modelSource: e.target.value as "jev" | "kev" | "span" | "solar" | "consensus",
+                          modelSource: e.target.value as "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "consensus",
                         }))
                       }
                       className="w-full bg-[#0f1013] text-white border border-white/[0.15] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#6aa9d8]"
@@ -2746,6 +2962,8 @@ export default function JevAnalysisPage() {
                       <option value="kev">مدل Kev-4b (اسکور ۰ تا ۴)</option>
                       <option value="span">مدل Span-01 (اسکور ۰ تا ۴)</option>
                       <option value="solar">مدل Solar-Decide (اسکور ۰ تا ۴)</option>
+                      <option value="tev">مدل Tev-4b (اسکور ۰ تا ۴)</option>
+                      <option value="mercury">مدل Mercury-Decide (اسکور ۰ تا ۴)</option>
                       <option value="consensus">اجماع هر ۳ مدل (میانگین اسکور)</option>
                     </select>
                   </div>
@@ -3281,21 +3499,19 @@ export default function JevAnalysisPage() {
       </div>
 
       {/* Column & Metric Selector (User customizable view) */}
-      <div className="bg-[#181a1e]/90 border border-[rgba(190,190,200,0.18)] rounded-2xl p-5 space-y-4">
+      <div className="bg-[#181a1e]/90 border border-[rgba(190,190,200,0.18)] rounded-2xl p-4 space-y-3">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
           <div className="flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-[#6aa9d8]" />
-            <span className="text-sm font-semibold text-white">
-              انتخاب شاخص‌های جدول (مشخص کنید چه مواردی را فقط نشان دهد):
-            </span>
+            <span className="text-sm font-semibold text-white">Table columns</span>
             <span className="text-xs px-2 py-0.5 rounded-full bg-[#6aa9d8]/15 text-[#6aa9d8] font-bold">
-              {selectedColIds.length} ستون فعال
+              {selectedColIds.length} active
             </span>
           </div>
 
           {/* Quick Presets */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-[#9a9ca3] ml-1">پیش‌فرض‌ها:</span>
+            <span className="text-xs text-[#9a9ca3] mr-1">Presets:</span>
             {PRESETS.map((p) => {
               const isActive =
                 selectedColIds.length === p.cols.length &&
@@ -3317,29 +3533,58 @@ export default function JevAnalysisPage() {
           </div>
         </div>
 
-        {/* Individual Column Chips / Toggles */}
-        <div className="flex flex-wrap gap-2">
-          {ALL_COLUMNS.map((col) => {
-            const isSelected = selectedColIds.includes(col.id);
+        {/* Columns grouped by model; click a group title to toggle the whole group */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-3">
+          {[
+            ...COLUMN_GROUPS,
+            // Safety net: any column not listed above still shows up.
+            ...(() => {
+              const known = new Set(COLUMN_GROUPS.flatMap((g) => g.cols.map(([id]) => id)));
+              const rest = ALL_COLUMNS.filter((c) => !known.has(c.id));
+              return rest.length
+                ? [{ id: "other", title: "Other", dot: "#73757c", cols: rest.map((c): [string, string] => [c.id, c.shortLabel]) }]
+                : [];
+            })(),
+          ].map((group) => {
+            const ids = group.cols.map(([id]) => id);
+            const onCount = ids.filter((id) => selectedColIds.includes(id)).length;
             return (
-              <button
-                key={col.id}
-                onClick={() => toggleColumn(col.id)}
-                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-all ${
-                  isSelected
-                    ? "bg-[#6b86d6]/25 border-[#8ea4e8] text-white shadow-sm"
-                    : "bg-white/[0.03] border-white/[0.07] text-[#9a9ca3] hover:text-[#bdbdb8] hover:bg-white/[0.06]"
-                }`}
-              >
-                <div
-                  className={`w-3.5 h-3.5 rounded flex items-center justify-center text-[10px] ${
-                    isSelected ? "bg-[#6aa9d8] text-black font-bold" : "border border-white/20"
-                  }`}
+              <div key={group.id} className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => toggleColumnGroup(ids)}
+                  title={`Toggle all ${group.title} columns`}
+                  className="flex items-center gap-1.5 w-[112px] shrink-0 text-left text-[11px] font-semibold text-[#bdbdb8] hover:text-white transition-colors"
                 >
-                  {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
-                </div>
-                <span>{col.label}</span>
-              </button>
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: group.dot }} />
+                  <span className="truncate">{group.title}</span>
+                  <span className="text-[10px] font-normal text-[#73757c] tabular-nums">
+                    {onCount}/{ids.length}
+                  </span>
+                </button>
+                {group.cols.map(([id, label]) => {
+                  const isSelected = selectedColIds.includes(id);
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => toggleColumn(id)}
+                      className={`flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border transition-all ${
+                        isSelected
+                          ? "bg-[#6b86d6]/25 border-[#8ea4e8] text-white"
+                          : "bg-white/[0.03] border-white/[0.07] text-[#9a9ca3] hover:text-[#bdbdb8] hover:bg-white/[0.06]"
+                      }`}
+                    >
+                      <span
+                        className={`w-3 h-3 rounded flex items-center justify-center ${
+                          isSelected ? "bg-[#6aa9d8] text-black" : "border border-white/20"
+                        }`}
+                      >
+                        {isSelected && <Check className="w-2 h-2 stroke-[3]" />}
+                      </span>
+                      <span>{label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             );
           })}
         </div>
