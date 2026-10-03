@@ -80,6 +80,7 @@ export default function UpDownPage() {
     const iv = setInterval(tick, 5000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [coin, sigmaQs]);
+  const [openClaude, setOpenClaude] = useState(true);
   const [open15, setOpen15] = useState(false);
   const [open5, setOpen5] = useState(false);
   const [openA, setOpenA] = useState(false);
@@ -126,7 +127,7 @@ export default function UpDownPage() {
       const text = await res.text();
       setViewingContent(text);
     } catch {
-      setViewingContent("خطا در بارگذاری محتوای فایل");
+      setViewingContent("Error loading file content");
     }
   };
 
@@ -138,7 +139,7 @@ export default function UpDownPage() {
       const url = isManual ? `/api/jev/predict?force=true&coin=${c}` : `/api/jev/predict?coin=${c}`;
       const res = await fetch(url, { method: isManual ? "POST" : "GET" });
       const d = await res.json();
-      if (!res.ok || d.error) throw new Error(d.error || "خطا در دریافت پاسخ از Jev");
+      if (!res.ok || d.error) throw new Error(d.error || "Error getting a response from Jev");
       setJevResult(d);
       if (d.next_refresh_seconds != null) {
         setJevCountdown(Math.max(5, d.next_refresh_seconds));
@@ -147,7 +148,7 @@ export default function UpDownPage() {
       }
       fetchHistoryFiles(c);
     } catch (e: any) {
-      setJevError(e.message || "خطا در ارتباط با مدل تصمیم‌گیری Jev");
+      setJevError(e.message || "Error communicating with the Jev decision model");
     } finally {
       setJevLoading(false);
     }
@@ -192,6 +193,7 @@ const m = data?.model;
   const m5model = data?.model5;
   const modelA = data?.modelA;
   const modelC = data?.modelC;
+  const modelClaude = data?.modelClaude;
   const m1h: MarketRow | null = data?.m1h;
   const m15: MarketRow | null = data?.m15;
   const m5: MarketRow | null = data?.m5;
@@ -200,6 +202,13 @@ const m = data?.model;
   const market1h = m1h?.live ?? m1h?.up ?? null;
   const fair = m?.fairUp ?? null;
   const edge = m?.edge ?? null;
+
+  const claudeEdge = modelClaude?.edge ?? null;
+  const badgeClaude = modelClaude?.fairUp != null && (
+    <span className={`text-sm font-bold tabular-nums ${claudeEdge != null && Math.abs(claudeEdge) > 0.03 ? (claudeEdge > 0 ? "text-[#5fbf9a]" : "text-[#e5787f]") : "text-[#d97757]"}`}>
+      {(modelClaude.fairUp * 100).toFixed(1)}¢{claudeEdge != null && Math.abs(claudeEdge) > 0.03 && (claudeEdge > 0 ? " ↑" : " ↓")}
+    </span>
+  );
 
   const badge15 = fair != null && (
     <span className={`text-sm font-bold tabular-nums ${edge != null && Math.abs(edge) > 0.03 ? (edge > 0 ? "text-[#5fbf9a]" : "text-[#e5787f]") : "text-[#9a9ca3]"}`}>
@@ -242,21 +251,25 @@ const m = data?.model;
   };
 
   const auditText = [
-    "۱. ورودی‌های فرمول پایه‌ی ۱ ساعته (مدل الف):",
+    "1. Inputs of the 1-hour base formula (Model A):",
     `• S₀ = ${fmt(m?.s0)} | Sₜ = ${fmt(m?.st)} | xₜ = ln(Sₜ/S₀) = ${m?.xt != null ? m.xt.toFixed(6) : "—"}`,
     `• τ (hours) = ${modelA ? modelA.tauHours.toFixed(4) : "—"}`,
     `• σ₁ₕ = ${data?.sigma1h != null ? data.sigma1h.toFixed(4) : "—"} (${data?.sigmaSource ?? "—"})`,
     "",
-    "۲. ورودی‌های حل دستگاه (مدل ب — ۵ و ۱۵ دقیقه‌ای):",
-    `• τ₅ = ${m5model ? m5model.tau5.toFixed(2) : "—"} دقیقه | τ₁₅ = ${m ? m.tau15.toFixed(2) : "—"} دقیقه`,
+    "2. Joint-solve inputs (Model B — 5 and 15 minute):",
+    `• τ₅ = ${m5model ? m5model.tau5.toFixed(2) : "—"} min | τ₁₅ = ${m ? m.tau15.toFixed(2) : "—"} min`,
     `• Sₐ₅ = ${fmt(m5model?.sa5)} | y₅ = ln(Sₜ/Sₐ₅) = ${m5model ? m5model.y5.toFixed(6) : "—"}`,
     `• Sₐ₁₅ = ${fmt(m?.sa)} | y₁₅ = ln(Sₜ/Sₐ₁₅) = ${m ? m.y.toFixed(6) : "—"}`,
     `• p₅ = ${m5m?.live != null ? (m5m.live * 100).toFixed(2) + "¢" : "—"} | p₁₅ = ${m?.p15 != null ? (m.p15 * 100).toFixed(2) + "¢" : "—"}`,
     "",
-    "۳. ورودی‌های ارزش منصفانه‌ی نهایی (با رانش):",
+    "3. Final fair value inputs (with drift):",
     `• xₜ = ${m?.xt != null ? m.xt.toFixed(6) : "—"}`,
-    `• τ₆₀ = ${m ? m.tau60.toFixed(2) : "—"} دقیقه`,
-    `• σₘ (حل‌شده) = ${modelC ? modelC.sigmaM.toFixed(6) : "—"} | μ (حل‌شده) = ${modelC ? modelC.mu.toFixed(6) : "—"}`,
+    `• τ₆₀ = ${m ? m.tau60.toFixed(2) : "—"} min`,
+    `• σₘ (solved) = ${modelC ? modelC.sigmaM.toFixed(6) : "—"} | μ (solved) = ${modelC ? modelC.mu.toFixed(6) : "—"}`,
+    "",
+    "4. Claude model (price action only, no 15m/5m prices):",
+    `• xₜ = ${modelClaude ? modelClaude.x.toFixed(6) : "—"} | W = ${modelClaude ? modelClaude.W.toFixed(2) : "—"} effective min left (of ${modelClaude ? (60 - modelClaude.t).toFixed(2) : "—"} min)`,
+    `• σ̂₁ₕ = ${modelClaude ? modelClaude.sigma1h.toFixed(5) : "—"} | z = ${modelClaude ? modelClaude.z.toFixed(4) : "—"} | fair = ${modelClaude ? (modelClaude.fairUp * 100).toFixed(2) + "¢" : "—"}`,
   ].join("\n");
 
   const copyAudit = async () => {
@@ -362,12 +375,12 @@ const m = data?.model;
       {/* Jev Decision Model — 1-Hour Prediction (First card under prices) */}
       <Collapsible id="openJev" openState={openJev} toggle={() => setOpenJev(!openJev)}
         color={COINS.find(c => c.key === coin)?.color || "#6aa9d8"}
-        title={`Jev Decision Model — پیش‌بینی ۱ ساعته ${COINS.find(c => c.key === coin)?.label || coin.toUpperCase()}`}
+        title={`Jev Decision Model — 1-hour forecast ${COINS.find(c => c.key === coin)?.label || coin.toUpperCase()}`}
         subtitle="OpenRouter typesafe/jev-1.13"
         badge={
           jevResult?.decision?.answers?.one_hour_score?.score != null ? (
             <span className="inline-flex items-center gap-2 text-xs font-bold tabular-nums">
-              <span className="text-[#6aa9d8]">اسکور: {Number(jevResult.decision.answers.one_hour_score.score).toFixed(2)}/4.0</span>
+              <span className="text-[#6aa9d8]">Score: {Number(jevResult.decision.answers.one_hour_score.score).toFixed(2)}/4.0</span>
               {jevResult?.decision?.answers?.one_hour_direction?.choice && (
                 <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${jevResult.decision.answers.one_hour_direction.choice === 'UP' ? 'bg-[#5fbf9a]/20 text-[#5fbf9a]' : 'bg-[#e5787f]/20 text-[#e5787f]'}`}>
                   {jevResult.decision.answers.one_hour_direction.choice}
@@ -375,7 +388,7 @@ const m = data?.model;
               )}
             </span>
           ) : (
-            <span className="text-xs text-[#73757c]">آماده استعلام</span>
+            <span className="text-xs text-[#73757c]">Ready to query</span>
           )
         }>
         <div className="space-y-4">
@@ -383,9 +396,9 @@ const m = data?.model;
             <div className="flex flex-wrap items-center gap-3 text-xs text-[#bdbdb8]">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#5fbf9a]/10 border border-[#5fbf9a]/30 text-[#5fbf9a] text-[11px] font-medium">
                 <span className="w-2 h-2 rounded-full bg-[#5fbf9a]"></span>
-                <span>استعلام خودکار ۵ دقیقه‌ای ({coin.toUpperCase()}): <b>فعال</b></span>
+                <span>Auto query every 5 minutes ({coin.toUpperCase()}): <b>Active</b></span>
                 <span className="text-white/80 tabular-nums font-mono mr-1">
-                  (استعلام بعدی: {Math.floor(jevCountdown / 60)}:{(jevCountdown % 60).toString().padStart(2, '0')})
+                  (next query: {Math.floor(jevCountdown / 60)}:{(jevCountdown % 60).toString().padStart(2, '0')})
                 </span>
               </div>
               <div className="flex items-center gap-1.5 text-[11px] text-[#9a9ca3]">
@@ -393,7 +406,7 @@ const m = data?.model;
                 <span className="font-mono text-[#6aa9d8]">typesafe/jev-1.13</span>
                 {jevResult?.timestamp && (
                   <span className="text-[#73757c]">
-                    · آخرین ثبت ({jevResult.coin || coin.toUpperCase()}): {new Date(jevResult.timestamp).toLocaleTimeString("en-GB", { timeZone: "America/New_York" })} ET
+                    · Last record ({jevResult.coin || coin.toUpperCase()}): {new Date(jevResult.timestamp).toLocaleTimeString("en-GB", { timeZone: "America/New_York" })} ET
                   </span>
                 )}
               </div>
@@ -402,16 +415,16 @@ const m = data?.model;
               <Link
                 href={`/jev-analysis?coin=${coin}`}
                 className="inline-flex items-center gap-1.5 text-xs font-semibold rounded-lg px-3 py-2 bg-[#6b86d6]/25 hover:bg-[#6b86d6]/40 text-[#bdbdb8] hover:text-white border border-[#8ea4e8]/40 transition-all shadow-sm"
-                title="مشاهده داشبورد تحلیلی و انتخاب ۳ شاخص دلخواه">
+                title="Open the analysis dashboard and pick any 3 indicators">
                 <BarChart3 className="w-3.5 h-3.5 text-[#6aa9d8]" />
-                داشبورد آنالیز و مقایسه 📊
+                Analysis & comparison dashboard 📊
               </Link>
               <button
                 type="button"
                 onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistoryFiles(coin); }}
                 className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-lg px-3 py-2 border transition-all ${showHistory ? 'bg-[#6aa9d8]/20 border-[#6aa9d8] text-[#6aa9d8]' : 'bg-white/[0.08] hover:bg-white/[0.12] border-[rgba(190,190,200,0.2)] text-[#bdbdb8]'}`}>
                 <Clock className="w-3.5 h-3.5 text-[#6aa9d8]" />
-                فایل‌های ۵ دقیقه‌ای {coin.toUpperCase()} ({historyFiles.length})
+                5-minute files {coin.toUpperCase()} ({historyFiles.length})
                 <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showHistory ? "rotate-180" : ""}`} />
               </button>
               <button
@@ -419,9 +432,9 @@ const m = data?.model;
                 onClick={() => fetchJevPrediction(true, coin)}
                 disabled={jevLoading}
                 className="inline-flex items-center gap-2 text-xs font-medium rounded-lg px-3.5 py-2 bg-[#6366f1] text-white hover:opacity-90 transition-opacity disabled:opacity-50 shadow-md"
-                title="نیازی به کلیک نیست، هر ۵ دقیقه به طور خودکار انجام می‌شود">
+                title="No click needed; this runs automatically every 5 minutes">
                 <RefreshCw className={`w-3.5 h-3.5 ${jevLoading ? "animate-spin" : ""}`} />
-                {jevLoading ? "در حال استعلام Jev..." : `استعلام دستی فوری ${coin.toUpperCase()}`}
+                {jevLoading ? "Querying Jev..." : `Manual query now ${coin.toUpperCase()}`}
               </button>
             </div>
           </div>
@@ -440,24 +453,24 @@ const m = data?.model;
                   <div className="bg-[#181a1e]/90 rounded-xl p-5 border border-[rgba(190,190,200,0.18)] flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-[#9a9ca3] font-medium tracking-wider">اسکور پیش‌بینی ۱ ساعته (Score)</span>
+                        <span className="text-xs text-[#9a9ca3] font-medium tracking-wider">1-hour forecast score (Score)</span>
                         <span className="text-xs text-[#73757c] tabular-nums">
-                          اطمینان: {(Number(jevResult.decision.answers.one_hour_score.confidence || 0) * 100).toFixed(0)}%
+                          Confidence: {(Number(jevResult.decision.answers.one_hour_score.confidence || 0) * 100).toFixed(0)}%
                         </span>
                       </div>
                       <div className="flex items-baseline gap-3 my-2">
                         <span className="text-4xl font-extrabold text-[#6aa9d8] tabular-nums">
                           {Number(jevResult.decision.answers.one_hour_score.score).toFixed(2)}
                         </span>
-                        <span className="text-sm text-[#73757c]">از ۴.۰</span>
+                        <span className="text-sm text-[#73757c]">of 4.0</span>
                         <span className="text-sm font-semibold mr-auto text-[#e8e8e4]">
                           {(() => {
                             const sc = Number(jevResult.decision.answers.one_hour_score.score);
-                            if (sc >= 3.0) return "صعودی قوی (Strong Up) 🚀";
-                            if (sc >= 2.2) return "تمایل به صعود (Lean Up) ↗";
-                            if (sc >= 1.8) return "خنثی / تعادل (Neutral) ⚖";
-                            if (sc >= 1.0) return "تمایل به نزول (Lean Down) ↘";
-                            return "نزولی قوی (Strong Down) 🔻";
+                            if (sc >= 3.0) return "Strong Up 🚀";
+                            if (sc >= 2.2) return "Lean Up ↗";
+                            if (sc >= 1.8) return "Neutral ⚖";
+                            if (sc >= 1.0) return "Lean Down ↘";
+                            return "Strong Down 🔻";
                           })()}
                         </span>
                       </div>
@@ -489,9 +502,9 @@ const m = data?.model;
                   <div className="bg-[#181a1e]/90 rounded-xl p-5 border border-[rgba(190,190,200,0.18)] flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-[#9a9ca3] font-medium tracking-wider">جهت نهایی (Direction Choice)</span>
+                        <span className="text-xs text-[#9a9ca3] font-medium tracking-wider">Final direction (Direction Choice)</span>
                         <span className="text-xs text-[#73757c] tabular-nums">
-                          اطمینان: {(Number(jevResult.decision.answers.one_hour_direction.confidence || 0) * 100).toFixed(0)}%
+                          Confidence: {(Number(jevResult.decision.answers.one_hour_direction.confidence || 0) * 100).toFixed(0)}%
                         </span>
                       </div>
                       <div className="flex items-center gap-3 my-2">
@@ -499,20 +512,20 @@ const m = data?.model;
                           {jevResult.decision.answers.one_hour_direction.choice}
                         </span>
                         <span className="text-sm text-[#bdbdb8]">
-                          {jevResult.decision.answers.one_hour_direction.choice === 'UP' ? 'احتمال بسته شدن بالای قیمت آغازین' : 'احتمال بسته شدن پایین قیمت آغازین'}
+                          {jevResult.decision.answers.one_hour_direction.choice === 'UP' ? 'Likely to close above the opening price' : 'Likely to close below the opening price'}
                         </span>
                       </div>
 
                       {jevResult.decision.answers.one_hour_direction.probabilities && (
                         <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
                           <div className="p-2.5 rounded-lg bg-white/[0.04] border border-[rgba(190,190,200,0.12)]">
-                            <span className="text-[#9a9ca3] block text-[10px]">احتمال UP</span>
+                            <span className="text-[#9a9ca3] block text-[10px]">UP probability</span>
                             <span className="text-lg font-bold text-[#5fbf9a] tabular-nums">
                               {((jevResult.decision.answers.one_hour_direction.probabilities.UP || 0) * 100).toFixed(1)}%
                             </span>
                           </div>
                           <div className="p-2.5 rounded-lg bg-white/[0.04] border border-[rgba(190,190,200,0.12)]">
-                            <span className="text-[#9a9ca3] block text-[10px]">احتمال DOWN</span>
+                            <span className="text-[#9a9ca3] block text-[10px]">DOWN probability</span>
                             <span className="text-lg font-bold text-[#e5787f] tabular-nums">
                               {((jevResult.decision.answers.one_hour_direction.probabilities.DOWN || 0) * 100).toFixed(1)}%
                             </span>
@@ -527,7 +540,7 @@ const m = data?.model;
               {/* Probabilities distribution levels */}
               {jevResult.decision.answers.one_hour_score?.probabilities && (
                 <div className="bg-[#181a1e]/70 rounded-xl p-4 border border-[rgba(190,190,200,0.12)]">
-                  <p className="text-xs text-[#9a9ca3] font-medium tracking-wider mb-3">توزیع احتمالات سطوح اسکور (Probability Distribution)</p>
+                  <p className="text-xs text-[#9a9ca3] font-medium tracking-wider mb-3">Score level probability distribution (Probability Distribution)</p>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs tabular-nums">
                     {[
                       { key: "0", label: "Strong Down", color: "#e5787f" },
@@ -552,13 +565,13 @@ const m = data?.model;
 
               {/* Model usage & state toggle */}
               <div className="flex flex-wrap items-center justify-between text-[11px] text-[#73757c] pt-1">
-                <span>توکن ورودی: {jevResult.decision.usage?.input_tokens ?? "—"} · هزینه استعلام: ${(jevResult.decision.usage?.cost ?? 0).toFixed(6)}</span>
-                <span>منبع داده: فایل <code className="text-[#bdbdb8]">/jev/btc_updown.json</code></span>
+                <span>Input tokens: {jevResult.decision.usage?.input_tokens ?? "—"} · Query cost: ${(jevResult.decision.usage?.cost ?? 0).toFixed(6)}</span>
+                <span>Data source: file <code className="text-[#bdbdb8]">/jev/btc_updown.json</code></span>
               </div>
             </div>
           ) : (
             <div className="p-6 text-center text-xs text-[#9a9ca3] bg-[#181a1e]/50 rounded-xl border border-dashed border-[rgba(190,190,200,0.15)]">
-              برای محاسبه‌ی اسکور پیش‌بینی ۱ ساعته بیت‌کوین بر اساس داده‌های کارت‌ها و Fair Valueهای فعلی، روی دکمه‌ی «استعلام پیش‌بینی ۱ ساعته از Jev» کلیک کنید.
+              To compute the Bitcoin 1-hour forecast score from the current cards and Fair Values, click the “Manual query now” button.
             </div>
           )}
 
@@ -568,18 +581,18 @@ const m = data?.model;
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] pb-3">
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-[#6aa9d8]" />
-                  <span className="text-xs font-semibold text-white">فایل‌های تاریخی ذخیره شده هر ۵ دقیقه (داده‌ها + پیش‌بینی Jev)</span>
+                  <span className="text-xs font-semibold text-white">Historical files saved every 5 minutes (data + Jev forecast)</span>
                   <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#6aa9d8]/15 text-[#6aa9d8] font-bold">
-                    {historyFiles.length} فایل
+                    {historyFiles.length} files
                   </span>
                 </div>
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="text-[11px] text-[#73757c]">مسیر ذخیره: <code className="text-[#bdbdb8]">/jev/history/</code></span>
+                  <span className="text-[11px] text-[#73757c]">Save path: <code className="text-[#bdbdb8]">/jev/history/</code></span>
                   <button
                     type="button"
                     onClick={() => fetchHistoryFiles(coin)}
                     className="p-1 rounded hover:bg-white/[0.08] text-[#9a9ca3] hover:text-white transition-colors"
-                    title="تازه‌سازی لیست">
+                    title="Refresh list">
                     <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? "animate-spin" : ""}`} />
                   </button>
                 </div>
@@ -587,7 +600,7 @@ const m = data?.model;
 
               {historyFiles.length === 0 ? (
                 <div className="text-center py-6 text-xs text-[#9a9ca3]">
-                  هنوز فایلی ثبت نشده است یا در حال ذخیره‌سازی اولین فایل ۵ دقیقه‌ای هستیم...
+                  No files recorded yet, or the first 5-minute file is being saved...
                 </div>
               ) : (
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
@@ -612,7 +625,7 @@ const m = data?.model;
                         )}
                         {f.score != null && (
                           <span className="px-2 py-0.5 rounded bg-white/[0.06] text-[#bdbdb8] text-[10px] tabular-nums font-mono">
-                            اسکور: {Number(f.score).toFixed(2)}
+                            Score: {Number(f.score).toFixed(2)}
                           </span>
                         )}
                         {f.up_1h && (
@@ -626,14 +639,14 @@ const m = data?.model;
                           onClick={() => viewFileDetails(f.filename)}
                           className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#6aa9d8]/15 hover:bg-[#6aa9d8]/25 text-[#6aa9d8] text-[11px] transition-colors">
                           <Eye className="w-3 h-3" />
-                          {viewingFile === f.filename ? "بستن" : "مشاهده JSON"}
+                          {viewingFile === f.filename ? "Close" : "View JSON"}
                         </button>
                         <a
                           href={`/api/jev/history?file=${f.filename}`}
                           target="_blank"
                           rel="noreferrer"
                           className="p-1 rounded bg-white/[0.06] hover:bg-white/[0.12] text-[#9a9ca3] hover:text-white transition-colors"
-                          title="دانلود مستقیم JSON">
+                          title="Direct JSON download">
                           <Download className="w-3 h-3" />
                         </a>
                       </div>
@@ -646,12 +659,12 @@ const m = data?.model;
               {viewingFile && viewingContent && (
                 <div className="mt-3 p-3 rounded-lg bg-black/60 border border-[rgba(190,190,200,0.2)] font-mono text-[11px] text-[#9fb4ee] space-y-2">
                   <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5 text-xs text-white">
-                    <span>محتوای فایل: <b className="text-[#6aa9d8]">{viewingFile}</b></span>
+                    <span>File content: <b className="text-[#6aa9d8]">{viewingFile}</b></span>
                     <button
                       type="button"
                       onClick={() => { setViewingFile(null); setViewingContent(null); }}
                       className="text-[#9a9ca3] hover:text-white text-xs">
-                      ✕ بستن
+                      ✕ Close
                     </button>
                   </div>
                   <pre className="overflow-x-auto max-h-64 text-[10px] leading-relaxed text-[#bdbdb8] whitespace-pre p-2 bg-[#0f1013] rounded border border-white/[0.05]">
@@ -664,9 +677,53 @@ const m = data?.model;
         </div>
       </Collapsible>
 
+      {/* Claude — calibrated price-action model — collapsible */}
+      <Collapsible id="openClaude" openState={openClaude} toggle={() => setOpenClaude(!openClaude)}
+        color="#d97757" title="Claude — calibrated price-action model" subtitle="1H Up, no drift extraction" badge={badgeClaude}>
+        {modelClaude ? (
+        <>
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="bg-[#181a1e]/80 rounded-xl p-4 border border-[rgba(190,190,200,0.13)]">
+              <p className="text-[10px] text-[#73757c] mb-1">Fair value (Up)</p>
+              <p className="text-3xl font-bold text-[#d97757] tabular-nums">{(modelClaude.fairUp * 100).toFixed(1)}¢</p>
+            </div>
+            <div className="bg-[#181a1e]/80 rounded-xl p-4 border border-[rgba(190,190,200,0.13)]">
+              <p className="text-[10px] text-[#73757c] mb-1">Market price (Up)</p>
+              <p className="text-3xl font-bold text-white tabular-nums">{market1h != null ? (market1h * 100).toFixed(1) + "¢" : "—"}</p>
+            </div>
+            <div className={`bg-[#181a1e]/80 rounded-xl p-4 border ${claudeEdge != null && Math.abs(claudeEdge) > 0.03 ? (claudeEdge > 0 ? "border-[#5fbf9a]/40" : "border-[#e5787f]/40") : "border-[rgba(190,190,200,0.13)]"}`}>
+              <p className="text-[10px] text-[#73757c] mb-1">Edge (fair − market)</p>
+              <p className={`text-3xl font-bold tabular-nums ${claudeEdge == null ? "text-[#73757c]" : claudeEdge > 0.03 ? "text-[#5fbf9a]" : claudeEdge < -0.03 ? "text-[#e5787f]" : "text-[#bdbdb8]"}`}>
+                {claudeEdge == null ? "—" : (claudeEdge > 0 ? "+" : "") + (claudeEdge * 100).toFixed(1) + "¢"}
+              </p>
+              <p className="text-[10px] text-[#73757c] mt-1">{claudeEdge != null && Math.abs(claudeEdge) > 0.03 ? (claudeEdge > 0 ? "Up looks underpriced" : "Down looks underpriced") : "within noise band ±3¢"}</p>
+            </div>
+          </div>
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-xs whitespace-nowrap">
+              <tbody className="divide-y divide-[rgba(190,190,200,0.10)] text-[#bdbdb8] tabular-nums">
+                <tr><td className="py-1.5 pr-4">t (min into hour)</td><td className="py-1.5 pr-4">{modelClaude.t.toFixed(2)}</td><td className="py-1.5 pr-4">xₜ = ln(Sₜ/S₀)</td><td className="py-1.5">{modelClaude.x.toFixed(5)}</td></tr>
+                <tr><td className="py-1.5 pr-4">W (variance left)</td><td className="py-1.5 pr-4">{modelClaude.W.toFixed(2)} eff. min of {(60 - modelClaude.t).toFixed(2)} min</td><td className="py-1.5 pr-4">z = xₜ / (σ̂ₘ·√W)</td><td className="py-1.5">{modelClaude.z.toFixed(4)}</td></tr>
+                <tr><td className="py-1.5 pr-4">σ̂₁ₕ (forecast)</td><td className="py-1.5 pr-4">{(modelClaude.sigma1h * 100).toFixed(3)}%</td><td className="py-1.5 pr-4">σ̂ₘ (per minute)</td><td className="py-1.5">{(modelClaude.sigmaMin * 1e4).toFixed(2)} bp</td></tr>
+                <tr><td className="py-1.5 pr-4">realized vol, last 15 / 60 min</td><td className="py-1.5 pr-4">{(modelClaude.vol.rv15 * 1e4).toFixed(2)} / {(modelClaude.vol.rv60 * 1e4).toFixed(2)} bp/min</td><td className="py-1.5 pr-4">last 4 h / 16 h</td><td className="py-1.5">{(modelClaude.vol.rv240 * 1e4).toFixed(2)} / {(modelClaude.vol.rv960 * 1e4).toFixed(2)} bp/min</td></tr>
+                <tr><td className="py-1.5 pr-4">k (scale) / s (σ uncertainty)</td><td className="py-1.5 pr-4">{modelClaude.k} / {modelClaude.s}</td><td className="py-1.5 pr-4">model version</td><td className="py-1.5">{modelClaude.version}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[11px] text-[#73757c] mt-3 leading-relaxed">
+            fair = Σᵢ wᵢ·Φ(k·z·e^(−s·εᵢ)) averaged over a log-normal error on σ (fat tails) · σ̂ blends the last 15/60/240/960 closed 1m bars on log variance, floored at 0.1%/h · W counts variance by minute of the hour (heavier early, a spike at :30, lighter late) instead of τ₆₀ = 60 − t · uses spot and the hour open only: no 15m/5m prices, no market price. Edge is a diagnostic, not a validated signal.
+          </p>
+        </>
+        ) : (
+          <p className="text-xs text-[#73757c]">
+            {m1h?.closed ? "1H market already settled." : "Needs the hour open, live spot and 960 closed 1m bars from Binance."}
+          </p>
+        )}
+      </Collapsible>
+
       {/* Fair Value — 1H Up (μ from 15m) — collapsible */}
       <Collapsible id="open15" openState={open15} toggle={() => setOpen15(!open15)}
-        color="#6aa9d8" title="Fair Value — 1H Up (μ from 15m)" subtitle="مدل ۱۵ دقیقه‌ای" badge={badge15}>
+        color="#6aa9d8" title="Fair Value — 1H Up (μ from 15m)" subtitle="15-minute model" badge={badge15}>
         <div className="flex items-center justify-end mb-4">
           <label className="flex items-center gap-2 text-xs text-[#9a9ca3]">
             σ₁ₕ (hourly vol):
@@ -731,7 +788,7 @@ const m = data?.model;
 
       {/* Fair Value — 1H Up (μ from 5m) — collapsible */}
       <Collapsible id="open5" openState={open5} toggle={() => setOpen5(!open5)}
-        color="#d4b063" title="Fair Value — 1H Up (μ from 5m)" subtitle="مدل ۵ دقیقه‌ای" badge={badge5}>
+        color="#d4b063" title="Fair Value — 1H Up (μ from 5m)" subtitle="5-minute model" badge={badge5}>
         {m5model ? (
         <>
           <div className="grid md:grid-cols-3 gap-4">
@@ -768,9 +825,9 @@ const m = data?.model;
         ) : <p className="text-xs text-[#73757c]">5m model inactive (market near resolution or missing data).</p>}
       </Collapsible>
 
-      {/* الف — Base (no drift) — collapsible */}
+      {/* A — Base (no drift) — collapsible */}
       <Collapsible id="openA" openState={openA} toggle={() => setOpenA(!openA)}
-        color="#9fb4ee" title="الف — Base (no drift)" subtitle="فرمول پایه" badge={badgeA}>
+        color="#9fb4ee" title="A — Base (no drift)" subtitle="Base formula" badge={badgeA}>
         {modelA ? (
         <>
           <div className="grid md:grid-cols-3 gap-4">
@@ -797,12 +854,12 @@ const m = data?.model;
             </table>
           </div>
         </>
-        ) : <p className="text-xs text-[#73757c]">مدل الف نیاز به S₀ و Sₜ زنده دارد.</p>}
+        ) : <p className="text-xs text-[#73757c]">Model A needs live S₀ and Sₜ.</p>}
       </Collapsible>
 
       {/* Joint Solve — σ & μ — collapsible */}
       <Collapsible id="openC" openState={openC} toggle={() => setOpenC(!openC)}
-        color="#d68aa8" title="Joint Solve — σ & μ" subtitle="حل دستگاه" badge={badgeC}>
+        color="#d68aa8" title="Joint Solve — σ & μ" subtitle="Joint solve" badge={badgeC}>
         {modelC && modelC.valid ? (
         <>
           <p className="text-[11px] text-[#73757c] mb-4">
@@ -843,7 +900,7 @@ const m = data?.model;
 
       {/* Snapshot (S₀/SA/ST/P15/P5) — collapsible */}
       <Collapsible id="openSnap" openState={openSnap} toggle={() => setOpenSnap(!openSnap)}
-        color="#9a9ca3" title="Snapshot (S₀/SA/ST/P15/P5)" subtitle="کپی سریع" badge={null}>
+        color="#9a9ca3" title="Snapshot (S₀/SA/ST/P15/P5)" subtitle="Quick copy" badge={null}>
         <div className="flex items-center justify-end mb-3">
           <button onClick={copySnapshot}
             className={`text-xs font-medium rounded-lg px-3 py-1.5 border transition-colors ${copied ? "bg-[#5fbf9a]/10 text-[#5fbf9a] border-[#5fbf9a]/35" : "text-[#bdbdb8] border-[rgba(190,190,200,0.15)] hover:border-[rgba(190,190,200,0.28)]"}`}>
@@ -862,9 +919,9 @@ const m = data?.model;
         </table>
       </Collapsible>
 
-      {/* Formula Audit — ورودی‌های سه مدل — collapsible */}
+      {/* Formula Audit — inputs of the three models — collapsible */}
       <Collapsible id="openAudit" openState={openAudit} toggle={() => setOpenAudit(!openAudit)}
-        color="#9a9ca3" title="Formula Audit — ورودی‌های سه مدل" subtitle="کپی کامل" badge={null}>
+        color="#9a9ca3" title="Formula Audit — inputs of the three models" subtitle="Full copy" badge={null}>
         <div className="flex items-center justify-end mb-3">
           <button onClick={copyAudit}
             className={`text-xs font-medium rounded-lg px-3 py-1.5 border transition-colors ${copiedAudit ? "bg-[#5fbf9a]/10 text-[#5fbf9a] border-[#5fbf9a]/35" : "text-[#bdbdb8] border-[rgba(190,190,200,0.15)] hover:border-[rgba(190,190,200,0.28)]"}`}>
@@ -873,29 +930,29 @@ const m = data?.model;
         </div>
         <div className="space-y-4 text-sm">
           <div>
-            <p className="text-xs font-semibold text-[#9fb4ee] tracking-wide mb-1.5">۱. ورودی‌های فرمول پایه‌ی ۱ ساعته (مدل الف)</p>
+            <p className="text-xs font-semibold text-[#9fb4ee] tracking-wide mb-1.5">1. Inputs of the 1-hour base formula (Model A)</p>
             <ul className="text-[#bdbdb8] space-y-1 text-[13px] tabular-nums">
-              <li>• S₀ (قیمت شروع ساعت) = <b className="text-white">{fmt(m?.s0)}</b> · Sₜ (قیمت لحظه‌ای) = <b className="text-white">{fmt(m?.st)}</b> → xₜ = ln(Sₜ/S₀) = <b className="text-white">{m?.xt != null ? m.xt.toFixed(6) : "—"}</b></li>
+              <li>• S₀ (hour open price) = <b className="text-white">{fmt(m?.s0)}</b> · Sₜ (current price) = <b className="text-white">{fmt(m?.st)}</b> → xₜ = ln(Sₜ/S₀) = <b className="text-white">{m?.xt != null ? m.xt.toFixed(6) : "—"}</b></li>
               <li>• τ (hours) = <b className="text-white">{modelA ? modelA.tauHours.toFixed(4) : "—"}</b></li>
               <li>• σ₁ₕ = <b className="text-white">{data?.sigma1h != null ? data.sigma1h.toFixed(4) : "—"}</b> ({data?.sigmaSource ?? "—"})</li>
             </ul>
           </div>
           <div>
-            <p className="text-xs font-semibold text-[#d4b063] tracking-wide mb-1.5">۲. ورودی‌های حل دستگاه (مدل ب — ۵ و ۱۵ دقیقه‌ای)</p>
+            <p className="text-xs font-semibold text-[#d4b063] tracking-wide mb-1.5">2. Joint-solve inputs (Model B — 5 and 15 minute)</p>
             <ul className="text-[#bdbdb8] space-y-1 text-[13px] tabular-nums">
-              <li>• τ₅ = <b className="text-white">{m5model ? m5model.tau5.toFixed(2) : "—"}</b> دقیقه · τ₁₅ = <b className="text-white">{m ? m.tau15.toFixed(2) : "—"}</b> دقیقه</li>
-              <li>• Sₐ₅ (شروع بلاک ۵m) = <b className="text-white">{fmt(m5model?.sa5 ?? m5model?.sa5)}</b> → y₅ = ln(Sₜ/Sₐ₅) = <b className="text-white">{m5model ? m5model.y5.toFixed(6) : "—"}</b></li>
-              <li>• Sₐ₁₅ (شروع بلاک ۱۵m) = <b className="text-white">{fmt(m?.sa)}</b> → y₁₅ = ln(Sₜ/Sₐ₁₅) = <b className="text-white">{m ? m.y.toFixed(6) : "—"}</b></li>
+              <li>• τ₅ = <b className="text-white">{m5model ? m5model.tau5.toFixed(2) : "—"}</b> min · τ₁₅ = <b className="text-white">{m ? m.tau15.toFixed(2) : "—"}</b> min</li>
+              <li>• Sₐ₅ (5m block start) = <b className="text-white">{fmt(m5model?.sa5 ?? m5model?.sa5)}</b> → y₅ = ln(Sₜ/Sₐ₅) = <b className="text-white">{m5model ? m5model.y5.toFixed(6) : "—"}</b></li>
+              <li>• Sₐ₁₅ (15m block start) = <b className="text-white">{fmt(m?.sa)}</b> → y₁₅ = ln(Sₜ/Sₐ₁₅) = <b className="text-white">{m ? m.y.toFixed(6) : "—"}</b></li>
               <li>• p₅ = <b className="text-white">{m5m?.live != null ? (m5m.live * 100).toFixed(2) + "¢" : "—"}</b> · p₁₅ = <b className="text-white">{m?.p15 != null ? (m.p15 * 100).toFixed(2) + "¢" : "—"}</b></li>
             </ul>
           </div>
           <div>
-            <p className="text-xs font-semibold text-[#d68aa8] tracking-wide mb-1.5">۳. ورودی‌های ارزش منصفانه‌ی نهایی (با رانش)</p>
+            <p className="text-xs font-semibold text-[#d68aa8] tracking-wide mb-1.5">3. Final fair value inputs (with drift)</p>
             <ul className="text-[#bdbdb8] space-y-1 text-[13px] tabular-nums">
               <li>• xₜ = <b className="text-white">{m?.xt != null ? m.xt.toFixed(6) : "—"}</b></li>
-              <li>• τ₆₀ = <b className="text-white">{m ? m.tau60.toFixed(2) + " دقیقه" : "—"}</b></li>
-              <li>• σₘ (حل‌شده از دستگاه) = <b className="text-white">{modelC ? modelC.sigmaM.toFixed(6) : "—"}</b> · μ = <b className="text-white">{modelC ? modelC.mu.toFixed(6) : "—"}</b></li>
-              <li className="text-[#73757c] text-xs">(اگر مستقیماً همین خروجی را بفرستی، نیازی به محاسبه‌ی مجدد مرحله‌ی ۲ نیست)</li>
+              <li>• τ₆₀ = <b className="text-white">{m ? m.tau60.toFixed(2) + " min" : "—"}</b></li>
+              <li>• σₘ (solved from the system) = <b className="text-white">{modelC ? modelC.sigmaM.toFixed(6) : "—"}</b> · μ = <b className="text-white">{modelC ? modelC.mu.toFixed(6) : "—"}</b></li>
+              <li className="text-[#73757c] text-xs">(If you send this output directly, step 2 does not need to be recalculated)</li>
             </ul>
           </div>
         </div>

@@ -27,10 +27,10 @@ const FIELDS: Record<SettingKey, Field> = {
   "jev.models": {
     label: "Models",
     kind: "flags",
-    flags: { jev: "Jev", kev: "Kev-4b", span: "Span-01", solar: "Solar-Decide (extra filter, not a consensus vote)", tev: "Tev-4b (extra, not a consensus vote)", mercury: "Mercury-Decide (extra, free, not a consensus vote)" },
+    flags: { jev: "Jev", kev: "Kev-4b", span: "Span-01", solar: "Solar-Decide (extra filter, not a consensus vote)", tev: "Tev-4b (extra, not a consensus vote)", mercury: "Mercury-Decide (extra, free, not a consensus vote)", liquid: "Liquid-D1 (extra, not a consensus vote)" },
     hint: "Each enabled model is one paid OpenRouter call per coin per record",
   },
-  "jev.recordIntervalSec": { label: "Record every (s)", kind: "int", hint: "60–3600" },
+  "jev.recordIntervalSec": { label: "Record every (s)", kind: "int", hint: "30–3600" },
   "jev.snapshotIntervalSec": { label: "Snapshot refresh (s)", kind: "int", hint: "10–600" },
   "alerts.intervalSec": { label: "Alert evaluation (s)", kind: "int", hint: "30–3600" },
   "supervisor.autostart": {

@@ -25,7 +25,7 @@ export interface Settings {
   'watchdog.telegramToken': string;
   'watchdog.telegramChat': string;
   'jev.coins': JevCoin[];
-  'jev.models': { jev: boolean; kev: boolean; span: boolean; solar: boolean; tev: boolean; mercury: boolean };
+  'jev.models': { jev: boolean; kev: boolean; span: boolean; solar: boolean; tev: boolean; mercury: boolean; liquid: boolean };
   'jev.recordIntervalSec': number;
   'jev.snapshotIntervalSec': number;
   'alerts.intervalSec': number;
@@ -137,13 +137,13 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
     },
     restarts: ['jev'],
   },
-  // A value saved before Solar, Tev or Mercury existed has no such key: treat it as on instead of discarding the setting.
+  // A value saved before Solar, Tev, Mercury or Liquid existed has no such key: treat it as on instead of discarding the setting.
   'jev.models': {
-    default: { jev: true, kev: true, span: true, solar: true, tev: true, mercury: true },
-    parse: v => flags(['jev', 'kev', 'span', 'solar', 'tev', 'mercury'] as const, true)(v && typeof v === 'object' ? { solar: true, tev: true, mercury: true, ...v } : v),
+    default: { jev: true, kev: true, span: true, solar: true, tev: true, mercury: true, liquid: true },
+    parse: v => flags(['jev', 'kev', 'span', 'solar', 'tev', 'mercury', 'liquid'] as const, true)(v && typeof v === 'object' ? { solar: true, tev: true, mercury: true, liquid: true, ...v } : v),
     restarts: ['jev'],
   },
-  'jev.recordIntervalSec': { default: 300, parse: intRange(60, 3600), restarts: ['jev'] },
+  'jev.recordIntervalSec': { default: 300, parse: intRange(30, 3600), restarts: ['jev'] },
   'jev.snapshotIntervalSec': { default: 30, parse: intRange(10, 600), restarts: ['jev'] },
   'alerts.intervalSec': { default: 60, parse: intRange(30, 3600), restarts: ['alerts'] },
   'supervisor.autostart': {

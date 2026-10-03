@@ -12,6 +12,8 @@
     "alerts": "tsx scripts/alerts.ts",
     "jev": "tsx scripts/jev.ts",
     "backfill:models": "tsx scripts/backfill_models.ts",
+    "backfill:cl": "tsx scripts/backfill_cl.ts",
+    "ask:cl": "tsx scripts/ask_cl.ts",
     "bot": "tsx scripts/bot.ts"
   },
   "dependencies": {

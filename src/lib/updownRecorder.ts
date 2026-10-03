@@ -32,7 +32,9 @@ export async function recordUpdownTicks(coins = RECORDER_COINS): Promise<string[
       fair: {
         model_15m: r(d.model?.fairUp), model_5m: r(d.model5?.fairUp),
         base_no_drift: r(d.modelA?.fairUp), joint_solve: d.modelC?.valid ? r(d.modelC?.fairUp) : null,
+        claude: r(d.modelClaude?.fairUp),
       },
+      claude_version: d.modelClaude?.version ?? null,
     }));
   });
   if (lines.length) {

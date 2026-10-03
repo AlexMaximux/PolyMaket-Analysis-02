@@ -3,6 +3,9 @@ import {
   DEFAULT_ANALYSIS_CONFIG,
   FROZEN_STRATEGY,
   FROZEN_STRATEGY_2,
+  FROZEN_STRATEGY_3,
+  FROZEN_STRATEGY_4,
+  FROZEN_STRATEGY_5,
   STRATEGY_HISTORY,
   buildTrades,
   computeMetrics,
@@ -14,6 +17,7 @@ import {
   type AnalysisConfig,
   type SnapshotRow,
 } from '@/lib/signalAnalysis';
+import type { FilterCondition, FilterGroup } from '@/lib/fieldFilters';
 
 let seq = 0;
 function row(p: Partial<SnapshotRow> & { hm: string; slug?: string }): SnapshotRow {
@@ -47,6 +51,16 @@ describe('detectSignal', () => {
   });
   it('needs the minimum confidence', () => {
     expect(detectSignal(row({ hm: '04:10', score_confidence: 89 }), cfg())).toBeNull();
+  });
+  it('max confidence caps each side separately and defaults to no cap', () => {
+    const up = row({ hm: '04:10', score_confidence: 97 });
+    const down = row({ hm: '04:10', score: 0.2, score_confidence: 97 });
+    expect(detectSignal(up, cfg())?.dir).toBe('UP');
+    expect(detectSignal(up, cfg({ bullishMaxConf: 95 }))).toBeNull();
+    expect(detectSignal(up, cfg({ bearishMaxConf: 95 }))?.dir).toBe('UP');
+    expect(detectSignal(down, cfg({ bearishMaxConf: 95 }))).toBeNull();
+    expect(detectSignal(down, cfg({ bullishMaxConf: 95 }))?.dir).toBe('DOWN');
+    expect(detectSignal(row({ hm: '04:10', score_confidence: 95 }), cfg({ bullishMaxConf: 95 }))?.dir).toBe('UP');
   });
   it('averages the three scores for the avg model', () => {
     const r = row({ hm: '04:10', score: 3.9, kev_score: 3.6, span_score: 3.3, consensus_agreement: 100 });
@@ -184,6 +198,131 @@ describe('solar filter', () => {
   it('uses Solar own score when it is the model', () => {
     const r = row({ hm: '04:10', score: 0.1, solar_score: 3.9, solar_score_confidence: 95 });
     expect(detectSignal(r, cfg({ model: 'solar' }))?.dir).toBe('UP');
+  });
+});
+
+describe('flipped-hour filter (noPriorOpposite)', () => {
+  const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN' } as const;
+  // 04:10 DOWN at 60% confidence is not a trade at the 90% floor, but it shows the hour already flipped
+  const flipped = () => [row({ hm: '04:10', ...down, score_confidence: 60 }), row({ hm: '04:35' })];
+  const on = cfg({ dedupe: 'firstPerHour', noPriorOpposite: true });
+
+  it('is off by default, so a later signal in a flipped hour still trades', () => {
+    expect(buildTrades(flipped(), cfg({ dedupe: 'firstPerHour' }))).toHaveLength(1);
+  });
+  it('skips the hour once an opposite signal of any confidence appeared earlier in it', () => {
+    expect(buildTrades(flipped(), on)).toHaveLength(0);
+  });
+  it('does not block on an earlier signal in the same direction', () => {
+    const trades = buildTrades([row({ hm: '04:10' }), row({ hm: '04:35' })], { ...on, minMinute: 32 });
+    expect(trades.map((t) => t.minute)).toEqual([35]);
+  });
+  it('does not block on an opposite signal in a different hour', () => {
+    const r = [row({ hm: '04:10', ...down }), row({ hm: '05:35', slug: 'bitcoin-up-or-down-september-26-2026-5am-et' })];
+    expect(buildTrades(r, { ...on, minMinute: 32 }).map((t) => t.minute)).toEqual([35]);
+  });
+  it('keeps an earlier trade when the opposite signal comes after it', () => {
+    const trades = buildTrades([row({ hm: '04:35' }), row({ hm: '04:50', ...down })], on);
+    expect(trades.map((t) => [t.minute, t.dir])).toEqual([[35, 'UP']]);
+  });
+});
+
+describe('frozen strategy 3', () => {
+  it('is strategy 1 plus only the flipped-hour filter, and runs in parallel', () => {
+    const { noPriorOpposite, ...s3 } = FROZEN_STRATEGY_3.rule;
+    const { noPriorOpposite: off, ...v2 } = FROZEN_STRATEGY.rule;
+    expect(noPriorOpposite).toBe(true);
+    expect(off).toBe(false);
+    expect(s3).toEqual(v2);
+    expect(STRATEGY_HISTORY).not.toContain(FROZEN_STRATEGY_3);
+    expect(FROZEN_STRATEGY_3.frozenUntil).toBeNull();
+  });
+  it('is frozen on the top of an hour, so no market hour is split between backtest and forward rows', () => {
+    const t = new Date(FROZEN_STRATEGY_3.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_2.frozenAt).getTime());
+  });
+  it('the flipped-hour filter is off in every other frozen rule, so their history does not change', () => {
+    for (const s of [...STRATEGY_HISTORY, FROZEN_STRATEGY_2]) expect(s.rule.noPriorOpposite).toBe(false);
+  });
+});
+
+describe('frozen strategy 4', () => {
+  it('Jev alone at 3.25 / 0.75 and 85% score confidence, minute 45+, the hour first signal must pass, every coin', () => {
+    const r = FROZEN_STRATEGY_4.rule;
+    expect(r.coins).toEqual([]);
+    expect([r.model, r.confidenceType, r.directions]).toEqual(['jev', 'score', 'both']);
+    expect([r.bullishScore, r.bearishScore, r.bullishMinConf, r.bearishMinConf]).toEqual([3.25, 0.75, 85, 85]);
+    expect([r.consensus, r.solarAgrees, r.solarMinConf, r.noPriorOpposite]).toEqual(['none', false, 0, false]);
+    expect([r.minMinute, r.maxMinute, r.minEntry, r.maxEntry]).toEqual([45, 59, 0, 100]);
+    expect([r.dedupe, r.pickOrder]).toEqual(['firstPerHour', 'beforeFilters']);
+  });
+  it('runs in parallel, frozen on the top of an hour after strategy 3', () => {
+    const t = new Date(FROZEN_STRATEGY_4.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_3.frozenAt).getTime());
+    expect(STRATEGY_HISTORY).not.toContain(FROZEN_STRATEGY_4);
+    expect(FROZEN_STRATEGY_4.frozenUntil).toBeNull();
+  });
+});
+
+describe('frozen strategy 5 (strategy 1 + optimised)', () => {
+  it('is v2 with only the optimizer thresholds and minute window changed', () => {
+    const r = FROZEN_STRATEGY_5.rule;
+    expect([r.bullishScore, r.bearishScore]).toEqual([3.25, 0.75]);
+    expect([r.bullishMinConf, r.bullishMaxConf, r.bearishMinConf, r.bearishMaxConf]).toEqual([90, 100, 0, 98]);
+    expect([r.minMinute, r.maxMinute]).toEqual([30, 55]);
+    // Put v2's values back: nothing else may differ
+    expect({ ...r, bullishScore: 3.5, bearishScore: 0.5, bearishMinConf: 90, bearishMaxConf: 100, minMinute: 32, maxMinute: 59 }).toEqual(FROZEN_STRATEGY.rule);
+  });
+  it('runs in parallel, frozen on the top of an hour after strategy 4', () => {
+    const t = new Date(FROZEN_STRATEGY_5.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_4.frozenAt).getTime());
+    expect(STRATEGY_HISTORY).not.toContain(FROZEN_STRATEGY_5);
+    expect(FROZEN_STRATEGY_5.frozenUntil).toBeNull();
+  });
+  it('trades a DOWN signal at low confidence but not one above 98%, and only in minutes 30-55', () => {
+    const down = { score: 0.6, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN', up_1h_num: 20 } as const;
+    const r = FROZEN_STRATEGY_5.rule;
+    expect(buildTrades([row({ hm: '04:40', ...down, score_confidence: 40 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...down, score_confidence: 99 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:56', ...down, score_confidence: 40 })], r)).toHaveLength(0);
+  });
+});
+
+describe('field filters', () => {
+  const only = (over: Partial<FilterCondition>): FilterGroup[] => [
+    { id: 'g', conditions: [{ id: 'c', field: 'minute', op: 'between', a: null, b: null, values: [], enabled: true, ...over }] },
+  ];
+
+  it('are off by default and in every frozen rule, so the forward tests and the bot do not change', () => {
+    expect(DEFAULT_ANALYSIS_CONFIG.fieldFilters).toEqual([]);
+    for (const s of [...STRATEGY_HISTORY, FROZEN_STRATEGY_2, FROZEN_STRATEGY_3, FROZEN_STRATEGY_4, FROZEN_STRATEGY_5]) expect(s.rule.fieldFilters).toEqual([]);
+  });
+  it('after filters picks the first snapshot that passes; before filters skips the hour', () => {
+    const r = [row({ hm: '04:20' }), row({ hm: '04:50' })];
+    const late = only({ a: 45, b: 56 });
+    expect(buildTrades(r, cfg({ dedupe: 'firstPerHour', fieldFilters: late })).map((t) => t.minute)).toEqual([50]);
+    expect(buildTrades(r, cfg({ dedupe: 'firstPerHour', pickOrder: 'beforeFilters', fieldFilters: late }))).toHaveLength(0);
+  });
+  it('read the trade: price of the side bought and the signal direction', () => {
+    const down = row({ hm: '04:40', score: 0.2, direction: 'DOWN', up_1h_num: 15 }); // DOWN buys at 85¢
+    expect(buildTrades([down], cfg({ fieldFilters: only({ field: 'trade_price', op: 'gte', a: 85 }) }))).toHaveLength(1);
+    expect(buildTrades([down], cfg({ fieldFilters: only({ field: 'trade_price', op: 'gt', a: 85 }) }))).toHaveLength(0);
+    expect(buildTrades([down], cfg({ fieldFilters: only({ field: 'trade_dir', op: 'in', values: ['UP'] }) }))).toHaveLength(0);
+  });
+  it('read any snapshot field of the row, e.g. the Claude fair value', () => {
+    const r = [
+      { ...row({ hm: '04:40' }), fair_claude: 97 } as SnapshotRow,
+      { ...row({ hm: '05:40', slug: 'x-5am' }), fair_claude: 60 } as SnapshotRow,
+    ];
+    const t = buildTrades(r, cfg({ fieldFilters: only({ field: 'fair_claude', op: 'gte', a: 90 }) }));
+    expect(t.map((x) => x.hour)).toEqual([4]);
+  });
+  it('ignore a condition that is not filled in yet', () => {
+    const r = [row({ hm: '04:20' })];
+    expect(buildTrades(r, cfg({ fieldFilters: only({ a: 45 }) }))).toHaveLength(1);
   });
 });
 

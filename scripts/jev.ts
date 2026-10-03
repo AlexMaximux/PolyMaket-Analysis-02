@@ -9,6 +9,8 @@ import {
   getLatestHistoricalFile,
 } from '../src/lib/jevSnapshot';
 import { initializeAlertTracker } from '../src/lib/jevAlerts';
+import { saveClRecord } from '../src/lib/clSnapshot';
+import { askClFile } from '../src/lib/clAsk';
 import { updateMarketResolutions } from '../src/lib/marketResolver';
 import { getSetting } from '../src/lib/settings';
 import { beat } from '../src/lib/heartbeat';
@@ -54,6 +56,18 @@ async function startLoop() {
         console.log(
           `[${new Date().toISOString()}] 💾 SAVED 5-MIN MULTI-MODEL RECORD -> ${filename} | Consensus: ${multi.consensus?.summary || 'N/A'} | Jev: ${jevDir} | Kev: ${kevDir} | Span: ${spanDir}`
         );
+
+        // CL copy (jev/cl/): the same snapshot plus the Claude fair value, asked again with those inputs.
+        // Runs after the original is saved and logged; a failure here must never stop the collector.
+        try {
+          const cl = saveClRecord(snapshot, filename);
+          if (cl.written) {
+            const asked = await askClFile(cl.filename);
+            console.log(`[${new Date().toISOString()}] [${coin.toUpperCase()}] CL ${cl.filename}: ${asked.status}${asked.cost ? ` ($${asked.cost.toFixed(6)})` : ''}`);
+          }
+        } catch (err) {
+          console.error(`[${new Date().toISOString()}] [${coin.toUpperCase()}] CL record error:`, err instanceof Error ? err.message : err);
+        }
       }
     } catch (err: any) {
       console.error(`[${new Date().toISOString()}] [${coin.toUpperCase()}] Error in 5-min multi-model record:`, err.message || err);
@@ -64,14 +78,20 @@ async function startLoop() {
     for (const coin of SUPPORTED_COINS) {
       const latest = getLatestHistoricalFile(coin);
       const elapsed = latest ? Date.now() - latest.timestamp : Infinity;
-      if (elapsed >= JEV_RECORD_INTERVAL_MS) {
+      // Half a tick of slack: a file is stamped a few seconds after its tick starts, so a strict
+      // comparison would miss the next tick and stretch the cadence by a whole snapshot interval.
+      if (elapsed >= JEV_RECORD_INTERVAL_MS - SNAPSHOT_INTERVAL_MS / 2) {
         await runCoinRecord(coin);
         await sleep(1500); // Gentle pause between OpenRouter calls
       }
     }
   };
 
+  let cycleRunning = false;
   const run30sUpdate = async () => {
+    // Model calls for every coin can outlast one tick: skip rather than run two cycles at once.
+    if (cycleRunning) return;
+    cycleRunning = true;
     try {
       // 1. Refresh live snapshot cache for all coins
       for (const coin of SUPPORTED_COINS) {
@@ -100,6 +120,8 @@ async function startLoop() {
     } catch (err: any) {
       console.error(`[${new Date().toISOString()}] 30s update error:`, err.message || err);
       beat('jev', false, err.message || String(err));
+    } finally {
+      cycleRunning = false;
     }
   };
 

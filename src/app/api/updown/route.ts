@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { normCdf, normInv } from '@/lib/normal';
+import { claudeFairUp, volWindowsFromKlines, type ClaudeModelResult, type ClaudeVolInputs } from '@/lib/claudeModel';
 
 export const dynamic = 'force-dynamic';
 
@@ -225,6 +226,26 @@ async function realizedVol60m(symbol: string, futures: boolean): Promise<number 
   return recent;
 }
 
+// Volatility windows for the Claude model: rms of ln(close/open) over the last 15/60/240/960 closed 1m bars,
+// from one request for the last 1000 bars. Cached until the next 1m bar closes. A failed refresh keeps a value
+// computed within the last 5 min; after that the model reports nothing rather than a shorter window.
+const claudeVolCache = new Map<string, { value: ClaudeVolInputs | null; expires: number; at: number }>();
+async function claudeVol(symbol: string, futures: boolean): Promise<ClaudeVolInputs | null> {
+  const key = `${futures ? 'f' : 's'}:${symbol}`;
+  const hit = claudeVolCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.value;
+  const d = await j(`${binanceHost(futures)}/klines?symbol=${symbol}&interval=1m&limit=1000`);
+  const value = volWindowsFromKlines(d, Date.now());
+  if (value) {
+    const nextBar = (Math.floor(Date.now() / 60_000) + 1) * 60_000 + 2_000;
+    claudeVolCache.set(key, { value, expires: nextBar, at: Date.now() });
+    return value;
+  }
+  const recent = hit?.value != null && Date.now() - hit.at < 300_000 ? hit.value : null;
+  claudeVolCache.set(key, { value: recent, expires: Date.now() + 10_000, at: recent != null ? hit!.at : 0 });
+  return recent;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const coinKey = (searchParams.get('coin') || 'btc').toLowerCase();
@@ -235,6 +256,7 @@ export async function GET(request: Request) {
   const futures = !!cfg.futures;
   // started now, awaited just before the models so the kline fetches overlap the market lookups
   const sigmasP = Promise.all([realizedVol60m(cfg.binance, futures), realizedSigma1h(cfg.binance, futures)]);
+  const claudeVolP = claudeVol(cfg.binance, futures);
 
   const now = new Date();
   const nowSec = Math.floor(now.getTime() / 1000);
@@ -399,6 +421,14 @@ export async function GET(request: Request) {
     }
   }
 
+  // ---- Claude model: price-action only (no 15m/5m market prices), see src/lib/claudeModel.ts ----
+  let modelClaude: (ClaudeModelResult & { edge: number | null }) | null = null;
+  const claudeVolIn = await claudeVolP;
+  if (xt != null && claudeVolIn) {
+    const r = claudeFairUp({ x: xt, t, vol: claudeVolIn });
+    modelClaude = { ...r, edge: m1h?.live != null ? r.fairUp - (m1h.live as number) : null };
+  }
+
   return NextResponse.json({
     coin: coinKey, label: cfg.label, binanceSymbol: cfg.binance,
     spotPrice: st, openPrice: s0,
@@ -412,6 +442,6 @@ export async function GET(request: Request) {
     modelVersion: MODEL_VERSION,
     sigma1h, sigmaSource, sigma60m, sigma7d, priceVenue: futures ? 'binance-futures' : 'binance-spot',
     serverTime: nowSec, t, hourStartSec, win15Sec, win5Sec, next15Sec, next5Sec,
-    m1h, m15, m5, n15, n5, model, model5, modelA, modelC, sa5,
+    m1h, m15, m5, n15, n5, model, model5, modelA, modelC, modelClaude, sa5,
   });
 }

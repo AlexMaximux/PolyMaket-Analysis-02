@@ -26,6 +26,13 @@
   --color-foreground: var(--foreground);
 }
 
+/* A page that renders an element with data-wide uses the screen width (up to 2400px) instead of the 1200px column. */
+body:has([data-wide]) main,
+body:has([data-wide]) header > div,
+body:has([data-wide]) footer p {
+  max-width: 2400px;
+}
+
 html {
   font-feature-settings: "cv01", "ss03";
 }

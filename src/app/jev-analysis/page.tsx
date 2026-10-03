@@ -2,6 +2,20 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
+import { withHistorySet } from "@/lib/historyDataset";
+import { DatasetSwitch } from "@/components/DatasetSwitch";
+import { FieldFilterPanel } from "@/components/FieldFilterPanel";
+import { DIR_CHOICES, claudeEdge, snapshotFilterFields } from "@/lib/snapshotFilterFields";
+import {
+  NONE,
+  addCondition,
+  compileFilters,
+  describeFilters,
+  isConditionReady,
+  sanitizeFilterGroups,
+  type FilterField,
+  type FilterGroup,
+} from "@/lib/fieldFilters";
 import {
   Sparkles,
   TrendingUp,
@@ -35,22 +49,30 @@ import {
 
 export interface SignalMarkerConfig {
   enabled: boolean;
-  bullishScore: number;     // e.g. 3.5
+  bullishScore: number;     // e.g. 3.5 (score must be above this)
+  bullishMaxScore: number;  // e.g. 4; score must be at or below this
   bullishMinConf: number;   // e.g. 90
-  bearishScore: number;     // e.g. 0.5
+  bullishMaxConf: number;   // e.g. 98; 100 = no upper cap
+  bearishScore: number;     // e.g. 0.5 (score must be below this)
+  bearishMinScore: number;  // e.g. 0; score must be at or above this
   bearishMinConf: number;   // e.g. 90
+  bearishMaxConf: number;   // e.g. 98; 100 = no upper cap
   confidenceType: "score" | "direction" | "any";
   bullishColor: string;     // default "#6aa9d8"
   bearishColor: string;     // default "#d8646a"
-  modelSource?: "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "consensus"; // Default "jev"
+  modelSource?: "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "liquid" | "consensus"; // Default "jev"
 }
 
 const DEFAULT_SIGNAL_CONFIG: SignalMarkerConfig = {
   enabled: true,
   bullishScore: 3.5,
+  bullishMaxScore: 4,
   bullishMinConf: 90,
+  bullishMaxConf: 100,
   bearishScore: 0.5,
+  bearishMinScore: 0,
   bearishMinConf: 90,
+  bearishMaxConf: 100,
   confidenceType: "score",
   bullishColor: "#6aa9d8",
   bearishColor: "#d8646a",
@@ -108,11 +130,17 @@ function evaluateSignal(r: JevFileRecord, cfg: SignalMarkerConfig): SignalMatch 
       ? r.mercury_direction_confidence ?? r.mercury_confidence
       : r.mercury_score_confidence ?? r.mercury_confidence;
     modelName = "Mercury-Decide";
+  } else if (modelSrc === "liquid") {
+    targetScore = r.liquid_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.liquid_direction_confidence ?? r.liquid_confidence
+      : r.liquid_score_confidence ?? r.liquid_confidence;
+    modelName = "Liquid-D1";
   } else if (modelSrc === "consensus") {
     const scores = [r.score, r.kev_score, r.span_score].filter((s): s is number => s != null);
     targetScore = scores.length > 0 ? Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)) : null;
     conf = r.consensus_agreement ?? r.score_confidence;
-    modelName = "اجماع مدل‌ها";
+    modelName = "Model consensus";
   } else {
     // "jev" (default)
     targetScore = r.score;
@@ -126,13 +154,18 @@ function evaluateSignal(r: JevFileRecord, cfg: SignalMarkerConfig): SignalMatch 
 
   if (targetScore == null || conf == null || isNaN(conf)) return null;
 
-  // Bullish: Target Score > 3.5 AND at the same time Confidence >= 90%
-  if (targetScore > cfg.bullishScore && conf >= cfg.bullishMinConf) {
+  const bullishMaxConf = cfg.bullishMaxConf ?? 100;
+  const bearishMaxConf = cfg.bearishMaxConf ?? 100;
+  const bullishMaxScore = cfg.bullishMaxScore ?? 4;
+  const bearishMinScore = cfg.bearishMinScore ?? 0;
+
+  // Bullish: 3.5 < Target Score <= Max score AND at the same time Min <= Confidence <= Max (e.g. 90..98%)
+  if (targetScore > cfg.bullishScore && targetScore <= bullishMaxScore && conf >= cfg.bullishMinConf && conf <= bullishMaxConf) {
     return {
       type: "BULLISH",
       direction: "UP",
-      label: `سیگنال صعود (${modelName} - تیک آبی)`,
-      rule: `اسکور ${modelName} > ${cfg.bullishScore} و اطمینان ≥ ${cfg.bullishMinConf}%`,
+      label: `Bullish signal (${modelName} - blue tick)`,
+      rule: `${modelName} score > ${cfg.bullishScore} and confidence ${cfg.bullishMinConf}–${bullishMaxConf}%`,
       color: cfg.bullishColor || "#6aa9d8",
       bgColor: "rgba(106,169,216, 0.15)",
       borderColor: cfg.bullishColor || "#6aa9d8",
@@ -142,13 +175,13 @@ function evaluateSignal(r: JevFileRecord, cfg: SignalMarkerConfig): SignalMatch 
     };
   }
 
-  // Bearish: Target Score < 0.5 AND at the same time Confidence >= 90%
-  if (targetScore < cfg.bearishScore && conf >= cfg.bearishMinConf) {
+  // Bearish: Min score <= Target Score < 0.5 AND at the same time Min <= Confidence <= Max (e.g. 90..98%)
+  if (targetScore < cfg.bearishScore && targetScore >= bearishMinScore && conf >= cfg.bearishMinConf && conf <= bearishMaxConf) {
     return {
       type: "BEARISH",
       direction: "DOWN",
-      label: `سیگنال نزول (${modelName} - تیک قرمز)`,
-      rule: `اسکور ${modelName} < ${cfg.bearishScore} و اطمینان ≥ ${cfg.bearishMinConf}%`,
+      label: `Bearish signal (${modelName} - red tick)`,
+      rule: `${modelName} score < ${cfg.bearishScore} and confidence ${cfg.bearishMinConf}–${bearishMaxConf}%`,
       color: cfg.bearishColor || "#d8646a",
       bgColor: "rgba(216,100,106, 0.15)",
       borderColor: cfg.bearishColor || "#d8646a",
@@ -187,6 +220,10 @@ interface JevFileRecord {
   fair_5m?: number | null;
   fair_base?: number | null;
   fair_joint?: number | null;
+  fair_claude?: number | null; // Claude 1H fair value, cents; only CL records carry it
+  spot_price?: number | null;
+  open_price?: number | null;
+  price_to_beat?: number | null;
   tokens?: number | null;
   cost?: number | null;
 
@@ -227,6 +264,14 @@ interface JevFileRecord {
   mercury_score_confidence?: number | null;
   mercury_direction_confidence?: number | null;
   mercury_prob_up?: number | null;
+  // Liquid D1 (extra, not part of the 3-model consensus)
+  liquid_direction?: "UP" | "DOWN" | null;
+  liquid_score?: number | null;
+  liquid_score_label?: string | null;
+  liquid_confidence?: number | null;
+  liquid_score_confidence?: number | null;
+  liquid_direction_confidence?: number | null;
+  liquid_prob_up?: number | null;
   span_prob_up?: number | null;
   span_prob_down?: number | null;
 
@@ -308,11 +353,56 @@ interface ColumnDef {
   sortVal?: (row: JevFileRecord, signalConfig?: SignalMarkerConfig) => string | number | null | undefined;
 }
 
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** UP probability and confidence columns for the extra models (Solar, Tev, Mercury, Liquid), mirroring the Kev columns. */
+function extraModelColumns(
+  prefix: "solar" | "tev" | "mercury" | "liquid",
+  name: string,
+  short: string,
+  color: string
+): ColumnDef[] {
+  const val = (r: JevFileRecord, key: string): number | null =>
+    (r as unknown as Record<string, number | null | undefined>)[`${prefix}_${key}`] ?? null;
+  const col = (key: string, label: string, shortLabel: string, withBar: boolean): ColumnDef => ({
+    id: `${prefix}_${key}`,
+    label,
+    shortLabel,
+    category: "models",
+    render: (r) => {
+      const v = val(r, key);
+      if (v == null) return <span className="text-[#73757c]">—</span>;
+      return (
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-xs font-semibold tabular-nums" style={{ color }}>
+            {v}%
+          </span>
+          {withBar && (
+            <div className="w-10 h-1.5 bg-white/[0.08] rounded-full overflow-hidden hidden sm:block">
+              <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, v))}%`, backgroundColor: color }} />
+            </div>
+          )}
+        </div>
+      );
+    },
+    exportVal: (r) => {
+      const v = val(r, key);
+      return v != null ? `${v}%` : "";
+    },
+  });
+  return [
+    col("prob_up", `${name} UP Probability (%UP)`, `${short} %UP`, true),
+    col("score_confidence", `${name} Score Confidence (%)`, `${short} score confidence`, true),
+    col("direction_confidence", `${name} Direction Confidence (%)`, `${short} direction confidence`, true),
+    col("confidence", `${name} Overall Confidence (%)`, `${short} confidence`, false),
+  ];
+}
+
 const ALL_COLUMNS: ColumnDef[] = [
   {
     id: "coin",
-    label: "ارز (Coin)",
-    shortLabel: "ارز",
+    label: "Coin",
+    shortLabel: "Coin",
     category: "jev",
     render: (r) => (
       <span className="font-bold text-xs px-2.5 py-0.5 rounded-full bg-white/[0.08] border border-white/[0.15] text-[#6aa9d8]">
@@ -324,8 +414,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "consensus",
-    label: "اجماع ۳ مدل (Consensus: Jev + Kev + Span)",
-    shortLabel: "اجماع مدل‌ها",
+    label: "3-model consensus (Jev + Kev + Span)",
+    shortLabel: "Model consensus",
     category: "models",
     render: (r) => {
       const dirs = [r.direction, r.kev_direction, r.span_direction].filter(Boolean) as ("UP" | "DOWN")[];
@@ -337,7 +427,7 @@ const ALL_COLUMNS: ColumnDef[] = [
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#5fbf9a]/20 text-[#5fbf9a] border border-[#5fbf9a]/40">
             <span className="w-1.5 h-1.5 rounded-full bg-[#5fbf9a]" />
-            {ups}/3 صعود کامل (UP)
+            {ups}/3 full UP
           </span>
         );
       }
@@ -345,27 +435,27 @@ const ALL_COLUMNS: ColumnDef[] = [
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#e5787f]/20 text-[#e5787f] border border-[#e5787f]/40">
             <span className="w-1.5 h-1.5 rounded-full bg-[#e5787f]" />
-            {downs}/3 نزول کامل (DOWN)
+            {downs}/3 full DOWN
           </span>
         );
       }
       if (ups > downs) {
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-[#5fbf9a]/10 text-[#8fd0a8] border border-[#5fbf9a]/20">
-            {ups}/3 تمایل صعود
+            {ups}/3 leaning UP
           </span>
         );
       }
       if (downs > ups) {
         return (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-[#e5787f]/10 text-[#eba0a5] border border-[#e5787f]/20">
-            {downs}/3 تمایل نزول
+            {downs}/3 leaning DOWN
           </span>
         );
       }
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs text-[#9a9ca3] bg-white/[0.05] border border-white/[0.1]">
-          اختلاف نظر (Split)
+          Split
         </span>
       );
     },
@@ -387,8 +477,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "signal",
-    label: "تیک سیگنال شرطی (Signal Marker)",
-    shortLabel: "سیگنال شرطی",
+    label: "Conditional signal tick",
+    shortLabel: "Signal tick",
     category: "jev",
     render: (r, cfg) => {
       const sig = evaluateSignal(r, cfg || DEFAULT_SIGNAL_CONFIG);
@@ -404,16 +494,16 @@ const ALL_COLUMNS: ColumnDef[] = [
             }}
           >
             <span className="font-bold">✓</span>
-            {sig.type === "BULLISH" ? "سیگنال صعود (آبی)" : "سیگنال نزول (قرمز)"}
+            {sig.type === "BULLISH" ? "Bullish signal (blue)" : "Bearish signal (red)"}
           </span>
           {r.is_first_hourly_signal ? (
-            <span className="text-[10px] text-amber-300 font-semibold flex items-center gap-0.5 pr-1" title="اولین سیگنال صادر شده در این ساعت (کندل ۱ ساعته)">
+            <span className="text-[10px] text-amber-300 font-semibold flex items-center gap-0.5 pr-1" title="First signal issued this hour (1-hour candle)">
               <Zap className="w-2.5 h-2.5 text-amber-400" />
-              اولین سیگنال ساعت
+              First signal of hour
             </span>
           ) : (
-            <span className="text-[10px] text-[#73757c] pr-1" title="سیگنال تکراری با جهت یکسان در این ساعت">
-              تکرار در ساعت
+            <span className="text-[10px] text-[#73757c] pr-1" title="Repeat signal in the same direction this hour">
+              Repeat in hour
             </span>
           )}
         </div>
@@ -422,7 +512,7 @@ const ALL_COLUMNS: ColumnDef[] = [
     exportVal: (r, cfg) => {
       const sig = evaluateSignal(r, cfg || DEFAULT_SIGNAL_CONFIG);
       if (!sig) return "";
-      return `${sig.label} ${r.is_first_hourly_signal ? "(اولین سیگنال ساعت)" : "(تکرار در ساعت)"}`;
+      return `${sig.label} ${r.is_first_hourly_signal ? "(first signal of hour)" : "(repeat in hour)"}`;
     },
     sortVal: (r, cfg) => {
       const sig = evaluateSignal(r, cfg || DEFAULT_SIGNAL_CONFIG);
@@ -432,8 +522,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "signal_result",
-    label: "نتیجه سیگنال (برد / باخت)",
-    shortLabel: "برد / باخت",
+    label: "Signal result (win / loss)",
+    shortLabel: "Win / Loss",
     category: "models",
     render: (r, cfg) => {
       const res = evaluateSignalOutcome(r, cfg || DEFAULT_SIGNAL_CONFIG);
@@ -442,7 +532,7 @@ const ALL_COLUMNS: ColumnDef[] = [
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 shadow-sm">
             <span className="text-emerald-300 font-bold">✓</span>
-            برد (WIN)
+            WIN
           </span>
         );
       }
@@ -450,23 +540,23 @@ const ALL_COLUMNS: ColumnDef[] = [
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/40 shadow-sm">
             <span className="text-rose-300 font-bold">✗</span>
-            باخت (LOSS)
+            LOSS
           </span>
         );
       }
       return (
         <span
           className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30"
-          title="سیگنال فعال است و در انتظار اتمام کندل یا تایید نهایی اوراکل UMA (بازه ۱۰-۳۰ دقیقه) می‌باشد"
+          title="Signal is active, waiting for the candle to close or final UMA oracle confirmation (10-30 minute window)"
         >
           <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-          ⏳ در انتظار نتیجه
+          ⏳ Awaiting result
         </span>
       );
     },
     exportVal: (r, cfg) => {
       const res = evaluateSignalOutcome(r, cfg || DEFAULT_SIGNAL_CONFIG);
-      return res.hasSignal ? (res.status === "WIN" ? "برد" : res.status === "LOSS" ? "باخت" : "در انتظار") : "";
+      return res.hasSignal ? (res.status === "WIN" ? "Win" : res.status === "LOSS" ? "Loss" : "Pending") : "";
     },
     sortVal: (r, cfg) => {
       const res = evaluateSignalOutcome(r, cfg || DEFAULT_SIGNAL_CONFIG);
@@ -478,21 +568,21 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "market_outcome",
-    label: "نتیجه نهایی مارکت ۱ ساعته (Polymarket Outcome)",
-    shortLabel: "نتیجه مارکت",
+    label: "Final 1-hour market result (Polymarket Outcome)",
+    shortLabel: "Market result",
     category: "market",
     render: (r) => {
       if (r.market_outcome === "UP") {
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-            🟢 صعود (UP)
+            🟢 UP
           </span>
         );
       }
       if (r.market_outcome === "DOWN") {
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
-            🔴 نزول (DOWN)
+            🔴 DOWN
           </span>
         );
       }
@@ -500,16 +590,16 @@ const ALL_COLUMNS: ColumnDef[] = [
         return (
           <span
             className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-amber-300 bg-amber-500/15 border border-amber-500/30"
-            title="کندل پایان یافته و طبق روند اوراکل Polymarket UMA تایید نهایی آن بین ۱۰ الی ۳۰ دقیقه زمان می‌برد"
+            title="Candle has closed; final confirmation by the Polymarket UMA oracle takes 10 to 30 minutes"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            ⏳ در انتظار تایید (۱۰-۳۰ دقیقه)
+            ⏳ Awaiting confirmation (10-30 min)
           </span>
         );
       }
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] text-sky-400/80 bg-sky-500/10 border border-sky-500/20">
-          ⚡ در حال معامله (جاری)
+          ⚡ Live (current candle)
         </span>
       );
     },
@@ -518,8 +608,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "direction",
-    label: "جهت Jev (Direction)",
-    shortLabel: "جهت Jev",
+    label: "Jev Direction",
+    shortLabel: "Jev direction",
     category: "jev",
     render: (r) =>
       r.direction ? (
@@ -540,8 +630,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "score",
-    label: "اسکور Jev (0 - 4)",
-    shortLabel: "اسکور Jev",
+    label: "Jev Score (0 - 4)",
+    shortLabel: "Jev score",
     category: "jev",
     render: (r) =>
       r.score != null ? (
@@ -564,7 +654,7 @@ const ALL_COLUMNS: ColumnDef[] = [
             {r.score.toFixed(2)}
           </span>
           <span className="text-[10px] text-[#9a9ca3] hidden sm:inline">
-            {r.score >= 3 ? "صعودی قوی" : r.score <= 1 ? "نزولی قوی" : "خنثی"}
+            {r.score >= 3 ? "Strong bullish" : r.score <= 1 ? "Strong bearish" : "Neutral"}
           </span>
         </div>
       ) : (
@@ -574,8 +664,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_direction",
-    label: "جهت Kev-4b (Direction)",
-    shortLabel: "جهت Kev",
+    label: "Kev-4b Direction",
+    shortLabel: "Kev direction",
     category: "models",
     render: (r) =>
       r.kev_direction ? (
@@ -601,8 +691,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_score",
-    label: "اسکور Kev-4b (0 - 4)",
-    shortLabel: "اسکور Kev",
+    label: "Kev-4b Score (0 - 4)",
+    shortLabel: "Kev score",
     category: "models",
     render: (r) =>
       r.kev_score != null ? (
@@ -635,8 +725,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_score_confidence",
-    label: "درصد اطمینان اسکور Kev-4b (Score Confidence %)",
-    shortLabel: "اطمینان اسکور Kev",
+    label: "Kev-4b Score Confidence (%)",
+    shortLabel: "Kev score confidence",
     category: "models",
     render: (r) =>
       r.kev_score_confidence != null ? (
@@ -658,8 +748,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_direction_confidence",
-    label: "درصد اطمینان سیگنال Kev-4b (Direction Confidence %)",
-    shortLabel: "اطمینان سیگنال Kev",
+    label: "Kev-4b Direction Confidence (%)",
+    shortLabel: "Kev direction confidence",
     category: "models",
     render: (r) =>
       r.kev_direction_confidence != null ? (
@@ -681,8 +771,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_confidence",
-    label: "اطمینان کلی Kev-4b (%)",
-    shortLabel: "اطمینان Kev",
+    label: "Kev-4b Overall Confidence (%)",
+    shortLabel: "Kev confidence",
     category: "models",
     render: (r) =>
       r.kev_confidence != null ? (
@@ -696,7 +786,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "kev_prob_up",
-    label: "احتمال صعود Kev-4b (%UP)",
+    label: "Kev-4b UP Probability (%UP)",
     shortLabel: "Kev %UP",
     category: "models",
     render: (r) =>
@@ -719,8 +809,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "span_direction",
-    label: "سیگنال Span-01",
-    shortLabel: "سیگنال Span",
+    label: "Span-01 Signal",
+    shortLabel: "Span signal",
     category: "models",
     render: (r) =>
       r.span_direction ? (
@@ -741,8 +831,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "span_score",
-    label: "اسکور Span-01 (0 - 4)",
-    shortLabel: "اسکور Span",
+    label: "Span-01 Score (0 - 4)",
+    shortLabel: "Span score",
     category: "models",
     render: (r) =>
       r.span_score != null ? (
@@ -786,8 +876,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "solar_direction",
-    label: "سیگنال Solar-Decide (فیلتر اضافه)",
-    shortLabel: "سیگنال Solar",
+    label: "Solar-Decide Signal (extra filter)",
+    shortLabel: "Solar signal",
     category: "models",
     render: (r) =>
       r.solar_direction ? (
@@ -808,8 +898,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "solar_score",
-    label: "اسکور Solar-Decide (0 - 4)",
-    shortLabel: "اسکور Solar",
+    label: "Solar-Decide Score (0 - 4)",
+    shortLabel: "Solar score",
     category: "models",
     render: (r) =>
       r.solar_score != null ? (
@@ -824,8 +914,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "tev_direction",
-    label: "سیگنال Tev-4b",
-    shortLabel: "سیگنال Tev",
+    label: "Tev-4b Signal",
+    shortLabel: "Tev signal",
     category: "models",
     render: (r) =>
       r.tev_direction ? (
@@ -846,8 +936,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "tev_score",
-    label: "اسکور Tev-4b (0 - 4)",
-    shortLabel: "اسکور Tev",
+    label: "Tev-4b Score (0 - 4)",
+    shortLabel: "Tev score",
     category: "models",
     render: (r) =>
       r.tev_score != null ? (
@@ -862,8 +952,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "mercury_direction",
-    label: "سیگنال Mercury-Decide",
-    shortLabel: "سیگنال Mercury",
+    label: "Mercury-Decide Signal",
+    shortLabel: "Mercury signal",
     category: "models",
     render: (r) =>
       r.mercury_direction ? (
@@ -884,8 +974,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "mercury_score",
-    label: "اسکور Mercury-Decide (0 - 4)",
-    shortLabel: "اسکور Mercury",
+    label: "Mercury-Decide Score (0 - 4)",
+    shortLabel: "Mercury score",
     category: "models",
     render: (r) =>
       r.mercury_score != null ? (
@@ -899,9 +989,47 @@ const ALL_COLUMNS: ColumnDef[] = [
     exportVal: (r) => r.mercury_score ?? "",
   },
   {
+    id: "liquid_direction",
+    label: "Liquid-D1 Signal",
+    shortLabel: "Liquid signal",
+    category: "models",
+    render: (r) =>
+      r.liquid_direction ? (
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold ${
+            r.liquid_direction === "UP"
+              ? "bg-[#9ccf6a]/20 text-[#9ccf6a] border border-[#9ccf6a]/30"
+              : "bg-[#e5787f]/20 text-[#e5787f] border border-[#e5787f]/30"
+          }`}
+        >
+          {r.liquid_direction === "UP" ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          {r.liquid_direction}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.liquid_direction || "",
+  },
+  {
+    id: "liquid_score",
+    label: "Liquid-D1 Score (0 - 4)",
+    shortLabel: "Liquid score",
+    category: "models",
+    render: (r) =>
+      r.liquid_score != null ? (
+        <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold tabular-nums text-white">
+          {r.liquid_score.toFixed(2)}
+          {r.liquid_confidence != null && <span className="text-[10px] text-[#b58cd9]">({r.liquid_confidence}%)</span>}
+        </span>
+      ) : (
+        <span className="text-[#73757c]">—</span>
+      ),
+    exportVal: (r) => r.liquid_score ?? "",
+  },
+  {
     id: "span_confidence",
-    label: "اطمینان اسکور Span-01",
-    shortLabel: "اطمینان Span",
+    label: "Span-01 Score Confidence",
+    shortLabel: "Span confidence",
     category: "models",
     render: (r) =>
       r.span_confidence != null ? (
@@ -915,7 +1043,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "span_prob_up",
-    label: "احتمال صعود Span-01 (%UP)",
+    label: "Span-01 UP Probability (%UP)",
     shortLabel: "Span-01 %UP",
     category: "models",
     render: (r) =>
@@ -938,8 +1066,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "prob_up",
-    label: "احتمال صعود Jev (%UP)",
-    shortLabel: "احتمال UP",
+    label: "Jev UP Probability (%UP)",
+    shortLabel: "UP probability",
     category: "jev",
     render: (r) =>
       r.prob_up != null ? (
@@ -953,8 +1081,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "score_confidence",
-    label: "درصد اطمینان اسکور Jev (Score Confidence %)",
-    shortLabel: "اطمینان اسکور",
+    label: "Jev Score Confidence (%)",
+    shortLabel: "Score confidence",
     category: "jev",
     render: (r) =>
       r.score_confidence != null ? (
@@ -976,8 +1104,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "direction_confidence",
-    label: "درصد اطمینان جهت Jev (Direction Confidence %)",
-    shortLabel: "اطمینان جهت",
+    label: "Jev Direction Confidence (%)",
+    shortLabel: "Direction confidence",
     category: "jev",
     render: (r) =>
       r.direction_confidence != null ? (
@@ -991,8 +1119,8 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "confidence",
-    label: "درصد اطمینان کلی Jev",
-    shortLabel: "اطمینان کلی",
+    label: "Jev Overall Confidence (%)",
+    shortLabel: "Overall confidence",
     category: "jev",
     render: (r) =>
       r.confidence != null ? (
@@ -1006,7 +1134,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "up_1h",
-    label: "پلی‌مارکت ۱ ساعته (1H Up)",
+    label: "Polymarket 1-hour (1H Up)",
     shortLabel: "1H Up %",
     category: "market",
     render: (r) =>
@@ -1022,7 +1150,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "up_15m",
-    label: "پلی‌مارکت ۱۵ دقیقه‌ای (15M Up)",
+    label: "Polymarket 15-minute (15M Up)",
     shortLabel: "15M Up %",
     category: "market",
     render: (r) =>
@@ -1037,7 +1165,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "up_5m",
-    label: "پلی‌مارکت ۵ دقیقه‌ای (5M Up)",
+    label: "Polymarket 5-minute (5M Up)",
     shortLabel: "5M Up %",
     category: "market",
     render: (r) =>
@@ -1052,7 +1180,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "fair_15m",
-    label: "Fair Value (مدل 15m)",
+    label: "Fair Value (15m model)",
     shortLabel: "Fair 15m",
     category: "fair",
     render: (r) =>
@@ -1067,7 +1195,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "fair_5m",
-    label: "Fair Value (مدل 5m)",
+    label: "Fair Value (5m model)",
     shortLabel: "Fair 5m",
     category: "fair",
     render: (r) =>
@@ -1082,7 +1210,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "fair_joint",
-    label: "Fair Value (مدل Joint Solve)",
+    label: "Fair Value (Joint Solve model)",
     shortLabel: "Fair Joint",
     category: "fair",
     render: (r) =>
@@ -1097,7 +1225,7 @@ const ALL_COLUMNS: ColumnDef[] = [
   },
   {
     id: "fair_base",
-    label: "Fair Value (مدل Base No Drift)",
+    label: "Fair Value (Base No Drift model)",
     shortLabel: "Fair Base",
     category: "fair",
     render: (r) =>
@@ -1111,9 +1239,49 @@ const ALL_COLUMNS: ColumnDef[] = [
     exportVal: (r) => (r.fair_base != null ? `${r.fair_base}c` : ""),
   },
   {
+    id: "fair_claude",
+    label: "Fair Value (Claude 1H model)",
+    shortLabel: "Fair Claude",
+    category: "fair",
+    render: (r) =>
+      r.fair_claude != null ? (
+        <span className="font-mono text-xs text-[#d97757] tabular-nums">
+          {r.fair_claude.toFixed(1)}¢
+        </span>
+      ) : (
+        <span className="text-[#73757c]" title="Only the CL dataset has the Claude fair value">—</span>
+      ),
+    exportVal: (r) => (r.fair_claude != null ? `${r.fair_claude}c` : ""),
+  },
+  {
+    id: "claude_edge",
+    label: "Claude edge (Claude fair value − 1H Up price)",
+    shortLabel: "Claude edge",
+    category: "fair",
+    render: (r) => {
+      const e = claudeEdge(r);
+      if (e == null) return <span className="text-[#73757c]">—</span>;
+      return (
+        <span
+          className="font-mono text-xs tabular-nums font-semibold"
+          style={{ color: e > 0 ? "#5fbf9a" : e < 0 ? "#e5787f" : "#9a9ca3" }}
+          title="Positive: Claude prices UP above the market. Negative: below it."
+        >
+          {e > 0 ? "+" : ""}
+          {e.toFixed(1)}¢
+        </span>
+      );
+    },
+    exportVal: (r) => {
+      const e = claudeEdge(r);
+      return e != null ? `${e}c` : "";
+    },
+    sortVal: (r) => claudeEdge(r),
+  },
+  {
     id: "tokens",
-    label: "توکن و هزینه Jev",
-    shortLabel: "هزینه استعلام",
+    label: "Jev Tokens & Cost",
+    shortLabel: "Query cost",
     category: "jev",
     render: (r) =>
       r.tokens ? (
@@ -1125,13 +1293,17 @@ const ALL_COLUMNS: ColumnDef[] = [
       ),
     exportVal: (r) => (r.tokens ? `${r.tokens} tokens ($${r.cost})` : ""),
   },
+  ...extraModelColumns("solar", "Solar-Decide", "Solar", "#d49a4a"),
+  ...extraModelColumns("tev", "Tev-4b", "Tev", "#4fb8b0"),
+  ...extraModelColumns("mercury", "Mercury-Decide", "Mercury", "#9ccf6a"),
+  ...extraModelColumns("liquid", "Liquid-D1", "Liquid", "#b58cd9"),
 ];
 
 const PRESETS = [
   {
     id: "multi_models",
     title: "All models",
-    cols: ["coin", "consensus", "signal", "signal_result", "direction", "score", "kev_direction", "kev_score", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "up_1h", "market_outcome"],
+    cols: ["coin", "consensus", "signal", "signal_result", "direction", "score", "kev_direction", "kev_score", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "liquid_direction", "liquid_score", "up_1h", "market_outcome"],
   },
   {
     id: "top3",
@@ -1151,7 +1323,7 @@ const PRESETS = [
   {
     id: "fair_values",
     title: "Fair value",
-    cols: ["coin", "direction", "fair_15m", "fair_5m", "fair_joint"],
+    cols: ["coin", "direction", "fair_15m", "fair_5m", "fair_joint", "fair_claude"],
   },
   {
     id: "signals",
@@ -1161,7 +1333,7 @@ const PRESETS = [
   {
     id: "full",
     title: "Full",
-    cols: ["coin", "consensus", "signal", "signal_result", "market_outcome", "direction", "score", "score_confidence", "kev_direction", "kev_score", "kev_score_confidence", "kev_direction_confidence", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "span_confidence", "span_prob_up", "up_1h", "fair_15m"],
+    cols: ["coin", "consensus", "signal", "signal_result", "market_outcome", "direction", "score", "score_confidence", "kev_direction", "kev_score", "kev_score_confidence", "kev_direction_confidence", "span_direction", "span_score", "solar_direction", "solar_score", "tev_direction", "tev_score", "mercury_direction", "mercury_score", "liquid_direction", "liquid_score", "span_confidence", "span_prob_up", "up_1h", "fair_15m"],
   },
 ];
 
@@ -1224,6 +1396,10 @@ const COLUMN_GROUPS: { id: string; title: string; dot: string; cols: [string, st
     cols: [
       ["solar_direction", "Direction"],
       ["solar_score", "Score"],
+      ["solar_prob_up", "Prob UP"],
+      ["solar_score_confidence", "Score conf."],
+      ["solar_direction_confidence", "Direction conf."],
+      ["solar_confidence", "Overall conf."],
     ],
   },
   {
@@ -1233,6 +1409,10 @@ const COLUMN_GROUPS: { id: string; title: string; dot: string; cols: [string, st
     cols: [
       ["tev_direction", "Direction"],
       ["tev_score", "Score"],
+      ["tev_prob_up", "Prob UP"],
+      ["tev_score_confidence", "Score conf."],
+      ["tev_direction_confidence", "Direction conf."],
+      ["tev_confidence", "Overall conf."],
     ],
   },
   {
@@ -1242,6 +1422,23 @@ const COLUMN_GROUPS: { id: string; title: string; dot: string; cols: [string, st
     cols: [
       ["mercury_direction", "Direction"],
       ["mercury_score", "Score"],
+      ["mercury_prob_up", "Prob UP"],
+      ["mercury_score_confidence", "Score conf."],
+      ["mercury_direction_confidence", "Direction conf."],
+      ["mercury_confidence", "Overall conf."],
+    ],
+  },
+  {
+    id: "liquid",
+    title: "Liquid-D1",
+    dot: "#b58cd9",
+    cols: [
+      ["liquid_direction", "Direction"],
+      ["liquid_score", "Score"],
+      ["liquid_prob_up", "Prob UP"],
+      ["liquid_score_confidence", "Score conf."],
+      ["liquid_direction_confidence", "Direction conf."],
+      ["liquid_confidence", "Overall conf."],
     ],
   },
   {
@@ -1263,9 +1460,30 @@ const COLUMN_GROUPS: { id: string; title: string; dot: string; cols: [string, st
       ["fair_5m", "5m"],
       ["fair_joint", "Joint solve"],
       ["fair_base", "Base (no drift)"],
+      ["fair_claude", "Claude"],
+      ["claude_edge", "Claude edge"],
     ],
   },
 ];
+
+// ---------- field filters ----------
+/**
+ * Every field the filter panel can test: the shared snapshot fields, plus the signal tick and its result, which
+ * follow the current tick conditions. Ids match the table column ids, so the visible columns can be offered first.
+ */
+function buildFilterFields(signals: SignalMarkerConfig, coins: string[]): FilterField<JevFileRecord>[] {
+  return snapshotFilterFields<JevFileRecord>((r) => r, coins, [
+    { id: "signal", label: "Signal tick", group: "Signal", kind: "choice", choices: DIR_CHOICES, get: (r) => evaluateSignal(r, signals)?.direction },
+    {
+      id: "signal_result", label: "Signal result", group: "Signal", kind: "choice",
+      choices: [{ value: "WIN", label: "WIN" }, { value: "LOSS", label: "LOSS" }, { value: "PENDING", label: "pending" }, { value: NONE, label: "no signal" }],
+      get: (r) => {
+        const s = evaluateSignalOutcome(r, signals).status;
+        return s === "NO_SIGNAL" ? null : s;
+      },
+    },
+  ]);
+}
 
 // Helper: generate smooth cubic bezier SVG path
 function generateSmoothCurve(points: { x: number; y: number }[]) {
@@ -1291,14 +1509,14 @@ function generateSmoothCurve(points: { x: number; y: number }[]) {
 }
 
 const AVAILABLE_COINS = [
-  { key: "all", label: "همه ارزها (All)" },
-  { key: "btc", label: "بیت‌کوین (BTC)", color: "#d49a4a" },
-  { key: "eth", label: "اتریوم (ETH)", color: "#627EEA" },
-  { key: "sol", label: "سولانا (SOL)", color: "#14F195" },
-  { key: "xrp", label: "ریپل (XRP)", color: "#7FA8C9" },
-  { key: "doge", label: "دوج‌کوین (DOGE)", color: "#C2A633" },
-  { key: "hype", label: "هایپرلیکوئید (HYPE)", color: "#97FCE4" },
-  { key: "bnb", label: "بی‌ان‌بی (BNB)", color: "#F3BA2F" },
+  { key: "all", label: "All coins" },
+  { key: "btc", label: "Bitcoin (BTC)", color: "#d49a4a" },
+  { key: "eth", label: "Ethereum (ETH)", color: "#627EEA" },
+  { key: "sol", label: "Solana (SOL)", color: "#14F195" },
+  { key: "xrp", label: "Ripple (XRP)", color: "#7FA8C9" },
+  { key: "doge", label: "Dogecoin (DOGE)", color: "#C2A633" },
+  { key: "hype", label: "Hyperliquid (HYPE)", color: "#97FCE4" },
+  { key: "bnb", label: "BNB", color: "#F3BA2F" },
 ];
 
 export default function JevAnalysisPage() {
@@ -1332,6 +1550,7 @@ export default function JevAnalysisPage() {
     up1h: boolean;
     up15m: boolean;
     fair15m: boolean;
+    fairClaude: boolean;
     up5m: boolean;
     signals: boolean;
     kevScore: boolean;
@@ -1342,13 +1561,14 @@ export default function JevAnalysisPage() {
     up1h: true,
     up15m: false,
     fair15m: true,
+    fairClaude: false,
     up5m: false,
     signals: true,
     kevScore: false,
     spanScore: false,
   });
 
-  // Signal Markers Configuration (تیک‌های شرطی آبی و قرمز روی منحنی)
+  // Signal Markers Configuration (blue and red conditional ticks on the curve)
   const [signals, setSignals] = useState<SignalMarkerConfig>(DEFAULT_SIGNAL_CONFIG);
   const [showSignalSettings, setShowSignalSettings] = useState(false);
 
@@ -1373,11 +1593,14 @@ export default function JevAnalysisPage() {
   >("ALL");
   const [onlyFirstHourlySignal, setOnlyFirstHourlySignal] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // Conditions on any field (ranges, comparisons, choices): ANDed within a group, groups ORed
+  const [fieldFilters, setFieldFilters] = useState<FilterGroup[]>([]);
+  const filterPanelRef = useRef<HTMLDivElement | null>(null);
   const [selectedFileForModal, setSelectedFileForModal] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
 
-  // Dashboard Persistence (ذخیره‌سازی تنظیمات در مرورگر)
+  // Dashboard Persistence (saving settings in the browser)
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const STORAGE_KEY = "jev_dashboard_preferences_v4";
@@ -1410,6 +1633,7 @@ export default function JevAnalysisPage() {
         if (parsed.endHour !== undefined) setEndHour(parsed.endHour);
         if (parsed.activeIntervalPreset !== undefined) setActiveIntervalPreset(parsed.activeIntervalPreset);
         if (parsed.dirFilter !== undefined) setDirFilter(parsed.dirFilter);
+        if (parsed.fieldFilters !== undefined) setFieldFilters(sanitizeFilterGroups(parsed.fieldFilters));
       }
     } catch (e) {
       console.error("Error loading dashboard preferences:", e);
@@ -1443,9 +1667,10 @@ export default function JevAnalysisPage() {
         endHour,
         activeIntervalPreset,
         dirFilter,
+        fieldFilters,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      setSaveStatus("تنظیمات داشبورد به‌طور خودکار ذخیره شد");
+      setSaveStatus("Dashboard settings saved automatically");
       const t = setTimeout(() => setSaveStatus(null), 2500);
       return () => clearTimeout(t);
     } catch (e) {
@@ -1462,6 +1687,7 @@ export default function JevAnalysisPage() {
     endHour,
     activeIntervalPreset,
     dirFilter,
+    fieldFilters,
   ]);
 
   const saveCurrentSettingsNow = () => {
@@ -1476,17 +1702,18 @@ export default function JevAnalysisPage() {
         endHour,
         activeIntervalPreset,
         dirFilter,
+        fieldFilters,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      setSaveStatus("تنظیمات داشبورد با موفقیت ذخیره شد ✓");
+      setSaveStatus("Dashboard settings saved ✓");
       setTimeout(() => setSaveStatus(null), 3000);
     } catch {
-      setSaveStatus("خطا در ذخیره تنظیمات");
+      setSaveStatus("Error saving settings");
     }
   };
 
   const resetAllSettingsToDefault = () => {
-    if (confirm("آیا مایلید تمام تنظیمات، ستون‌ها، فیلترها و شروط سیگنال به حالت پیش‌فرض بازگردد؟")) {
+    if (confirm("Reset all settings, columns, filters and signal conditions to defaults?")) {
       try {
         localStorage.removeItem(STORAGE_KEY);
       } catch {}
@@ -1498,19 +1725,21 @@ export default function JevAnalysisPage() {
         up1h: true,
         up15m: false,
         fair15m: true,
+        fairClaude: false,
         up5m: false,
         signals: true,
         kevScore: false,
         spanScore: false,
       });
       setSignals(DEFAULT_SIGNAL_CONFIG);
+      setFieldFilters([]);
       setDateFilter("ALL");
       setStartHour(null);
       setEndHour(null);
       setActiveIntervalPreset("ALL");
       setDirFilter("ALL");
       setOnlyFirstHourlySignal(false);
-      setSaveStatus("تمام تنظیمات به حالت اولیه بازنشانی شد");
+      setSaveStatus("All settings reset to defaults");
       setTimeout(() => setSaveStatus(null), 3000);
     }
   };
@@ -1539,17 +1768,17 @@ export default function JevAnalysisPage() {
             : "/api/jev/history";
         // Pass refresh=true so server runs throttled Polymarket resolution updates
         const url = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}refresh=true`;
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(withHistorySet(url), { cache: "no-store" });
         const json = await res.json();
         if (json.files) {
           setData(json.files);
           setLastRefreshedAt(new Date());
         } else {
-          throw new Error(json.error || "خطا در بارگذاری اطلاعات");
+          throw new Error(json.error || "Error loading data");
         }
       } catch (err: any) {
         if (!isSilent) {
-          setError(err.message || "خطا در ارتباط با سرور");
+          setError(err.message || "Error communicating with the server");
         }
       } finally {
         if (!isSilent) setLoading(false);
@@ -1576,11 +1805,11 @@ export default function JevAnalysisPage() {
     setSelectedFileForModal(filename);
     setFileLoading(true);
     try {
-      const res = await fetch(`/api/jev/history?file=${filename}`);
+      const res = await fetch(withHistorySet(`/api/jev/history?file=${filename}`));
       const text = await res.text();
       setFileContent(text);
     } catch {
-      setFileContent("خطا در بارگذاری محتوا");
+      setFileContent("Error loading content");
     } finally {
       setFileLoading(false);
     }
@@ -1651,8 +1880,30 @@ export default function JevAnalysisPage() {
     }
   };
 
-  // Base Filtered dataset (before direction/signal filter)
-  const baseFilteredData = useMemo(() => {
+  // Field filters: the fields on offer, the applied filter as one row test, and which fields it uses
+  const coinsInData = useMemo(() => [...new Set(data.map((r) => (r.coin || "BTC").toUpperCase()))].sort(), [data]);
+  const filterFields = useMemo(() => buildFilterFields(signals, coinsInData), [signals, coinsInData]);
+  const filterFieldMap = useMemo(() => new Map(filterFields.map((f) => [f.id, f])), [filterFields]);
+  const fieldFilterFn = useMemo(() => compileFilters(fieldFilters, filterFieldMap), [fieldFilters, filterFieldMap]);
+  const filteredFieldIds = useMemo(
+    () => new Set(fieldFilters.flatMap((g) => g.conditions.filter((c) => isConditionReady(c, filterFieldMap.get(c.field))).map((c) => c.field))),
+    [fieldFilters, filterFieldMap]
+  );
+  const fieldFilterSummary = useMemo(() => describeFilters(fieldFilters, filterFieldMap), [fieldFilters, filterFieldMap]);
+  // Visible columns first, then the time fields, so "minute 45 to 56" is always one click away
+  const quickFilterFieldIds = useMemo(
+    () => [...new Set([...selectedColIds, "minute", "hour"])].filter((id) => filterFieldMap.has(id)),
+    [selectedColIds, filterFieldMap]
+  );
+  const addFieldFilter = (fieldId: string) => {
+    const f = filterFieldMap.get(fieldId);
+    if (!f) return;
+    setFieldFilters((prev) => addCondition(prev, f));
+    filterPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Rows in the time window (date, hours, text search), before the field filters
+  const windowData = useMemo(() => {
     return data.filter((row) => {
       // Date filter
       if (dateFilter !== "ALL") {
@@ -1690,8 +1941,8 @@ export default function JevAnalysisPage() {
         const matchConsensus =
           (row.consensus_summary?.toLowerCase().includes(q) ?? false) ||
           (q === "3/3" && (is3Up || is3Down)) ||
-          ((q.includes("3/3") || q === "up" || q === "صعود") && is3Up) ||
-          ((q.includes("3/3") || q === "down" || q === "نزول") && is3Down);
+          ((q.includes("3/3") || q === "up" || q === "bullish") && is3Up) ||
+          ((q.includes("3/3") || q === "down" || q === "bearish") && is3Down);
 
         const matchDir = row.direction?.toLowerCase() === q;
         if (!matchTime && !matchFile && !matchScore && !matchConsensus && !matchDir) return false;
@@ -1700,6 +1951,12 @@ export default function JevAnalysisPage() {
       return true;
     });
   }, [data, dateFilter, startHour, endHour, searchQuery]);
+
+  // Base Filtered dataset (before direction/signal filter): the time window narrowed by the field filters
+  const baseFilteredData = useMemo(
+    () => (fieldFilterFn ? windowData.filter(fieldFilterFn) : windowData),
+    [windowData, fieldFilterFn]
+  );
 
   // Data with direction/signal filters applied (for table display)
   const filteredData = useMemo(() => {
@@ -1970,7 +2227,7 @@ export default function JevAnalysisPage() {
   // Export CSV of currently sorted and filtered data
   const exportCsv = () => {
     const activeCols = ALL_COLUMNS.filter((c) => selectedColIds.includes(c.id));
-    const headers = ["ردیف", "زمان (ET)", "نام فایل", ...activeCols.map((c) => c.label)];
+    const headers = ["No.", "Time (ET)", "File name", ...activeCols.map((c) => c.label)];
     const rows = sortedData.map((r, idx) => [
       idx + 1,
       `"${(r.current_time_et || r.et_time || "").replace(/"/g, '""')}"`,
@@ -1998,34 +2255,33 @@ export default function JevAnalysisPage() {
 
     const printWin = window.open("", "_blank");
     if (!printWin) {
-      alert("لطفاً باز شدن پنجره‌های پاپ‌آپ (Pop-up) را در مرورگر خود مجاز فرمایید.");
+      alert("Please allow pop-ups in your browser.");
       return;
     }
 
-    const title = `گزارش تحلیل پیش‌بینی‌های هوش مصنوعی پلی‌مارکت - ${selectedCoin.toUpperCase()}`;
-    const dateStr = new Date().toLocaleString("fa-IR");
+    const title = `Polymarket AI Prediction Analysis Report - ${selectedCoin.toUpperCase()}`;
+    const dateStr = new Date().toLocaleString("en-US");
     const sortLabel = sortConfig
-      ? ` | مرتب‌شده بر اساس: ${
+      ? ` | Sorted by: ${
           sortConfig.key === "time"
-            ? "زمان"
+            ? "Time"
             : ALL_COLUMNS.find((c) => c.id === sortConfig.key)?.label || sortConfig.key
-        } (${sortConfig.dir === "desc" ? "نزولی ↓" : "صعودی ↑"})`
+        } (${sortConfig.dir === "desc" ? "descending ↓" : "ascending ↑"})`
       : "";
 
     const htmlContent = `
 <!DOCTYPE html>
-<html dir="rtl" lang="fa">
+<html dir="ltr" lang="en">
 <head>
   <meta charset="utf-8">
   <title>${title}</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700;800&display=swap');
     
     * {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
-      font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     
     @page {
@@ -2114,7 +2370,7 @@ export default function JevAnalysisPage() {
       width: 100%;
       border-collapse: collapse;
       font-size: 10px;
-      text-align: right;
+      text-align: left;
     }
 
     th {
@@ -2174,41 +2430,43 @@ export default function JevAnalysisPage() {
 <body>
   <div class="no-print">
     <div>
-      <strong>پیش‌نمایش چاپ و دریافت فایل PDF</strong>
+      <strong>Print preview and PDF download</strong>
       <div style="font-size: 11px; color: #475569; margin-top: 2px;">
-        برای ذخیره نسخه PDF، روی دکمه زیر کلیک کرده و در پنجره چاپ، گزینه <strong>Save as PDF</strong> را انتخاب نمایید.
+        To save a PDF, click the button below and choose <strong>Save as PDF</strong> in the print dialog.
       </div>
     </div>
     <button class="btn" onclick="window.print()">
-      🖨️ چاپ / ذخیره به صورت PDF
+      🖨️ Print / Save as PDF
     </button>
   </div>
 
   <div class="header">
     <div>
       <h1>${title}</h1>
-      <div class="subtitle">تاریخ گزارش: ${dateStr} · ارز: ${selectedCoin.toUpperCase()} · فیلتر تاریخ: ${
-      dateFilter === "ALL" ? "تمام تاریخ‌ها" : dateFilter
-    } · تعداد سطرها: ${printableRows.length}${sortLabel}</div>
+      <div class="subtitle">Report date: ${dateStr} · Coin: ${selectedCoin.toUpperCase()} · Date filter: ${
+      dateFilter === "ALL" ? "All dates" : dateFilter
+    } · Rows: ${printableRows.length}${sortLabel}${
+      fieldFilterSummary ? ` · Field filters: ${escapeHtml(fieldFilterSummary)}` : ""
+    }</div>
     </div>
-    <div style="text-align: left; font-size: 10px; color: #73757c;">
+    <div style="text-align: right; font-size: 10px; color: #73757c;">
       Polymarket Up/Down | Jev & Multi-Model
     </div>
   </div>
 
   <div class="stats-banner">
-    <div class="stat-pill pill-blue">🎯 کل سیگنال‌های ساعتی: ${stats.signalCount}</div>
-    <div class="stat-pill pill-green">🏆 برد (WIN): ${stats.winCount}</div>
-    <div class="stat-pill pill-red">❌ باخت (LOSS): ${stats.lossCount}</div>
-    ${stats.winRate != null ? `<div class="stat-pill pill-green">📊 وین‌ریت ساعتی: ${stats.winRate}%</div>` : ""}
-    <div class="stat-pill pill-gray">تعداد سطرهای این خروجی: ${printableRows.length}</div>
+    <div class="stat-pill pill-blue">🎯 Total hourly signals: ${stats.signalCount}</div>
+    <div class="stat-pill pill-green">🏆 Wins (WIN): ${stats.winCount}</div>
+    <div class="stat-pill pill-red">❌ Losses (LOSS): ${stats.lossCount}</div>
+    ${stats.winRate != null ? `<div class="stat-pill pill-green">📊 Hourly win rate: ${stats.winRate}%</div>` : ""}
+    <div class="stat-pill pill-gray">Rows in this export: ${printableRows.length}</div>
   </div>
 
   <table>
     <thead>
       <tr>
         <th style="width: 35px; text-align: center;">#</th>
-        <th>زمان و ساعت (ET)</th>
+        <th>Date & time (ET)</th>
         ${activeCols.map((c) => `<th>${c.label}</th>`).join("")}
       </tr>
     </thead>
@@ -2232,12 +2490,12 @@ export default function JevAnalysisPage() {
                 const val = col.exportVal(row, signals);
                 let formatted = String(val ?? "");
                 if (col.id === "signal_result") {
-                  if (outcomeInfo.status === "WIN") formatted = '<span class="badge-win">✓ برد (WIN)</span>';
-                  else if (outcomeInfo.status === "LOSS") formatted = '<span class="badge-loss">✗ باخت (LOSS)</span>';
-                  else if (outcomeInfo.status === "PENDING") formatted = '⏳ در انتظار';
+                  if (outcomeInfo.status === "WIN") formatted = '<span class="badge-win">✓ WIN</span>';
+                  else if (outcomeInfo.status === "LOSS") formatted = '<span class="badge-loss">✗ LOSS</span>';
+                  else if (outcomeInfo.status === "PENDING") formatted = '⏳ Pending';
                 } else if (col.id === "market_outcome") {
-                  if (val === "UP") formatted = '<span class="badge-up">🟢 صعود</span>';
-                  else if (val === "DOWN") formatted = '<span class="badge-down">🔴 نزول</span>';
+                  if (val === "UP") formatted = '<span class="badge-up">🟢 UP</span>';
+                  else if (val === "DOWN") formatted = '<span class="badge-down">🔴 DOWN</span>';
                 }
                 return `<td>${formatted}</td>`;
               })
@@ -2269,9 +2527,21 @@ export default function JevAnalysisPage() {
     [selectedColIds]
   );
 
-  // SVG Chart Geometry
-  const chartWidth = 920;
-  const chartHeight = 280;
+  // SVG Chart Geometry: the viewBox follows the container width so labels keep their size on wide screens
+  const [chartEl, setChartEl] = useState<HTMLDivElement | null>(null);
+  const [chartWidth, setChartWidth] = useState(920);
+  useEffect(() => {
+    if (!chartEl) return;
+    const update = () => {
+      const w = Math.round(chartEl.getBoundingClientRect().width);
+      if (w > 0) setChartWidth(Math.max(640, Math.min(2400, w)));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(chartEl);
+    return () => ro.disconnect();
+  }, [chartEl]);
+  const chartHeight = chartWidth > 1400 ? 340 : 280;
   const padding = { top: 25, right: 45, bottom: 35, left: 45 };
   const plotWidth = chartWidth - padding.left - padding.right;
   const plotHeight = chartHeight - padding.top - padding.bottom;
@@ -2298,6 +2568,7 @@ export default function JevAnalysisPage() {
     const up1hPoints: { x: number; y: number }[] = [];
     const up15mPoints: { x: number; y: number }[] = [];
     const fair15mPoints: { x: number; y: number }[] = [];
+    const fairClaudePoints: { x: number; y: number }[] = [];
     const up5mPoints: { x: number; y: number }[] = [];
 
     const signalMarkers: {
@@ -2335,6 +2606,7 @@ export default function JevAnalysisPage() {
       if (d.up_1h_num != null) up1hPoints.push({ x, y: getYPct(d.up_1h_num) });
       if (d.up_15m_num != null) up15mPoints.push({ x, y: getYPct(d.up_15m_num) });
       if (d.fair_15m != null) fair15mPoints.push({ x, y: getYPct(d.fair_15m) });
+      if (d.fair_claude != null) fairClaudePoints.push({ x, y: getYPct(d.fair_claude) });
       if (d.up_5m_num != null) up5mPoints.push({ x, y: getYPct(d.up_5m_num) });
     });
 
@@ -2353,6 +2625,7 @@ export default function JevAnalysisPage() {
       up15mPoints,
       fair15mPath: generateSmoothCurve(fair15mPoints),
       fair15mPoints,
+      fairClaudePath: generateSmoothCurve(fairClaudePoints),
       up5mPath: generateSmoothCurve(up5mPoints),
       up5mPoints,
       signalMarkers,
@@ -2390,7 +2663,7 @@ export default function JevAnalysisPage() {
   const hoveredItem = hoverIndex != null && chartData[hoverIndex] ? chartData[hoverIndex] : null;
 
   return (
-    <div className="space-y-6">
+    <div data-wide className="space-y-6">
       {/* Top Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-white/[0.08] pb-6">
         <div>
@@ -2400,18 +2673,19 @@ export default function JevAnalysisPage() {
               className="inline-flex items-center gap-1 text-xs text-[#9a9ca3] hover:text-[#6aa9d8] transition-colors"
             >
               <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-              بازگشت به صفحه Up/Down
+              Back to Up/Down page
             </Link>
             <span className="text-xs text-[#73757c]">/</span>
             <span className="text-xs text-[#6aa9d8] font-medium">Jev JSON Analyzer</span>
           </div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2.5">
             <BarChart3 className="w-6 h-6 text-[#6aa9d8]" />
-            داشبورد آنالیز، فیلتر بازه زمانی و رسم منحنی Jev
+            Analysis dashboard, time-window filter and Jev curve chart
           </h1>
           <p className="text-xs text-[#9a9ca3] mt-1">
-            رسم منحنی‌های زمانی مقادیر در بازه‌های دلخواه (مثلاً ساعت ۱ تا ۲) و مقایسه داده‌ها
+            Plot value curves over custom time windows (e.g. 1:00 to 2:00) and compare data
           </p>
+          <div className="mt-2"><DatasetSwitch path="/jev-analysis" /></div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -2419,39 +2693,39 @@ export default function JevAnalysisPage() {
           <button
             onClick={saveCurrentSettingsNow}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#6aa9d8]/15 hover:bg-[#6aa9d8]/25 text-xs text-[#6aa9d8] border border-[#6aa9d8]/30 transition-all font-medium"
-            title="ذخیره تنظیمات فعلی، ستون‌ها، بازه‌ها و شروط سیگنال در مرورگر"
+            title="Save current settings, columns, time windows and signal conditions in the browser"
           >
             <Save className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">ذخیره تنظیمات</span>
+            <span className="hidden sm:inline">Save settings</span>
           </button>
 
           <button
             onClick={resetAllSettingsToDefault}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-xs text-[#9a9ca3] hover:text-[#e5787f] border border-white/[0.08] transition-all"
-            title="بازنشانی تمام فیلترها، ستون‌ها و شروط به حالت اولیه"
+            title="Reset all filters, columns and conditions to defaults"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">بازنشانی</span>
+            <span className="hidden sm:inline">Reset</span>
           </button>
 
           <button
             onClick={exportCsv}
             disabled={sortedData.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] text-xs text-[#bdbdb8] border border-white/[0.08] transition-all disabled:opacity-50 font-medium"
-            title="دانلود خروجی CSV از جدول جاری (با اعمال سورت و فیلترهای فعال)"
+            title="Download CSV of the current table (with active sort and filters applied)"
           >
             <Download className="w-3.5 h-3.5 text-[#6aa9d8]" />
-            <span>خروجی CSV ({sortedData.length})</span>
+            <span>CSV export ({sortedData.length})</span>
           </button>
 
           <button
             onClick={exportPdf}
             disabled={sortedData.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#6aa9d8]/15 hover:bg-[#6aa9d8]/25 text-xs text-[#6aa9d8] border border-[#6aa9d8]/30 transition-all disabled:opacity-50 font-medium"
-            title="چاپ و دانلود خروجی PDF جدول جاری با رنگ‌بندی کامل برد و باخت"
+            title="Print / download PDF of the current table with full win/loss coloring"
           >
             <Printer className="w-3.5 h-3.5" />
-            <span>خروجی PDF ({sortedData.length})</span>
+            <span>PDF export ({sortedData.length})</span>
           </button>
 
           {/* Auto Refresh Toggle Button */}
@@ -2462,7 +2736,7 @@ export default function JevAnalysisPage() {
                 ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25"
                 : "bg-white/[0.04] text-[#9a9ca3] border-white/[0.08] hover:bg-white/[0.08]"
             }`}
-            title="بروزرسانی خودکار جدول هر ۳۰ ثانیه (همگام با تاخیر ۱۰-۳۰ دقیقه‌ای تایید نهایی اوراکل Polymarket)"
+            title="Auto-refresh the table every 30 seconds (in step with the 10-30 minute Polymarket oracle final-confirmation delay)"
           >
             <span
               className={`w-2 h-2 rounded-full ${
@@ -2470,15 +2744,15 @@ export default function JevAnalysisPage() {
               }`}
             />
             <span className="hidden sm:inline">
-              {autoRefresh ? "بروزرسانی خودکار: روشن (۳۰s)" : "بروزرسانی خودکار: خاموش"}
+              {autoRefresh ? "Auto-refresh: on (30s)" : "Auto-refresh: off"}
             </span>
-            <span className="sm:hidden">{autoRefresh ? "خودکار: روشن" : "خودکار: خاموش"}</span>
+            <span className="sm:hidden">{autoRefresh ? "Auto: on" : "Auto: off"}</span>
             {isRefreshing && <RefreshCw className="w-3 h-3 text-emerald-400 animate-spin" />}
           </button>
 
           {lastRefreshedAt && (
-            <span className="text-[11px] text-[#73757c] hidden xl:inline-block font-mono" title="زمان آخرین دریافت داده‌ها از سرور">
-              آخرین دریافت: {lastRefreshedAt.toLocaleTimeString("fa-IR")}
+            <span className="text-[11px] text-[#73757c] hidden xl:inline-block font-mono" title="Time of last data fetch from the server">
+              Last fetched: {lastRefreshedAt.toLocaleTimeString("en-US")}
             </span>
           )}
 
@@ -2486,10 +2760,10 @@ export default function JevAnalysisPage() {
             onClick={() => loadHistory(selectedCoin, false)}
             disabled={loading || isRefreshing}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#6366f1] text-white text-xs font-medium hover:opacity-90 transition-opacity shadow-md disabled:opacity-50"
-            title="تازه‌سازی دستی و استعلام آخرین نتایج تایید شده از Polymarket"
+            title="Manual refresh; fetch the latest confirmed results from Polymarket"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading || isRefreshing ? "animate-spin" : ""}`} />
-            تازه‌سازی
+            Refresh
           </button>
         </div>
       </div>
@@ -2502,12 +2776,12 @@ export default function JevAnalysisPage() {
         </div>
       )}
 
-      {/* COIN SELECTOR BAR (انتخاب و فیلتر ارزها) */}
+      {/* COIN SELECTOR BAR (coin selection and filter) */}
       <div className="bg-[#181a1e]/90 border border-[rgba(190,190,200,0.18)] p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 shadow-md">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold text-[#9a9ca3] px-2 flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-[#d4b063]" />
-            انتخاب ارز:
+            Select coin:
           </span>
           <div className="flex flex-wrap items-center gap-1.5">
             {AVAILABLE_COINS.map((c) => {
@@ -2535,33 +2809,33 @@ export default function JevAnalysisPage() {
           </div>
         </div>
         <div className="text-xs text-[#73757c] mr-auto pl-2">
-          {selectedCoin === "all" ? "نمایش تمام پیش‌بینی‌های ثبت‌شده" : `نمایش تحلیل‌های اختصاصی ${selectedCoin.toUpperCase()}`}
+          {selectedCoin === "all" ? "Showing all recorded predictions" : `Showing analyses for ${selectedCoin.toUpperCase()}`}
         </div>
       </div>
 
-      {/* TIME RANGE FILTER CONTROLS (ساعت ۱ تا ۲ و بازه‌های دلخواه) */}
+      {/* TIME RANGE FILTER CONTROLS (1:00 to 2:00 and custom windows) */}
       <div className="bg-[#181a1e]/90 border border-[#6aa9d8]/30 rounded-2xl p-5 space-y-4 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-[#6aa9d8]" />
             <span className="text-sm font-bold text-white">
-              انتخاب بازه زمانی جهت رسم منحنی و فیلتر جدول (Time Window):
+              Select a time window for the curve chart and table filter (Time Window):
             </span>
             <span className="text-xs px-2 py-0.5 rounded-full bg-[#6aa9d8]/15 text-[#6aa9d8] font-bold">
-              {filteredData.length} اسنپ‌شات در بازه انتخابی
+              {filteredData.length} snapshots in the selected window
             </span>
           </div>
 
-          {/* Quick presets (ساعت ۱ تا ۲ و ...) */}
+          {/* Quick presets (1:00 to 2:00, ...) */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-[#9a9ca3] ml-1">بازه‌های سریع:</span>
+            <span className="text-xs text-[#9a9ca3] ml-1">Quick windows:</span>
             {[
-              { id: "ALL", label: "کل داده‌ها" },
-              { id: "13_14", label: "ساعت ۱ تا ۲ ظهر (13:00-14:00)" },
-              { id: "14_15", label: "ساعت ۲ تا ۳ عصر (14:00-15:00)" },
-              { id: "15_16", label: "ساعت ۳ تا ۴ عصر (15:00-16:00)" },
-              { id: "23_24", label: "ساعت ۱۱ تا ۱۲ شب (23:00-24:00)" },
-              { id: "01_02", label: "ساعت ۱ تا ۲ بامداد (01:00-02:00)" },
+              { id: "ALL", label: "All data" },
+              { id: "13_14", label: "1 PM to 2 PM (13:00-14:00)" },
+              { id: "14_15", label: "2 PM to 3 PM (14:00-15:00)" },
+              { id: "15_16", label: "3 PM to 4 PM (15:00-16:00)" },
+              { id: "23_24", label: "11 PM to 12 AM (23:00-24:00)" },
+              { id: "01_02", label: "1 AM to 2 AM (01:00-02:00)" },
             ].map((preset) => (
               <button
                 key={preset.id}
@@ -2583,13 +2857,13 @@ export default function JevAnalysisPage() {
           {/* Date Selector */}
           <div className="flex items-center gap-2 bg-white/[0.03] p-2.5 rounded-xl border border-white/[0.07]">
             <Calendar className="w-3.5 h-3.5 text-[#6aa9d8]" />
-            <span className="text-[#9a9ca3]">تاریخ:</span>
+            <span className="text-[#9a9ca3]">Date:</span>
             <select
               value={dateFilter}
               onChange={(e) => setDateFilter(e.target.value)}
               className="bg-[#0f1013] text-white border border-white/[0.15] rounded px-2 py-1 flex-1 focus:outline-none focus:border-[#6aa9d8]"
             >
-              <option value="ALL">تمام روزها ({availableDates.length} روز)</option>
+              <option value="ALL">All days ({availableDates.length} days)</option>
               {availableDates.map((d) => (
                 <option key={d} value={d}>
                   {d}
@@ -2601,7 +2875,7 @@ export default function JevAnalysisPage() {
           {/* Start Hour */}
           <div className="flex items-center gap-2 bg-white/[0.03] p-2.5 rounded-xl border border-white/[0.07]">
             <Clock className="w-3.5 h-3.5 text-[#5fbf9a]" />
-            <span className="text-[#9a9ca3]">از ساعت:</span>
+            <span className="text-[#9a9ca3]">From:</span>
             <select
               value={startHour ?? ""}
               onChange={(e) => {
@@ -2611,7 +2885,7 @@ export default function JevAnalysisPage() {
               }}
               className="bg-[#0f1013] text-white border border-white/[0.15] rounded px-2 py-1 flex-1 focus:outline-none focus:border-[#5fbf9a]"
             >
-              <option value="">شروع (00:00)</option>
+              <option value="">Start (00:00)</option>
               {Array.from({ length: 24 }).map((_, i) => (
                 <option key={i} value={i}>
                   {i.toString().padStart(2, "0")}:00 ({i === 13 ? "1 PM" : i === 1 ? "1 AM" : `${i}:00`})
@@ -2623,7 +2897,7 @@ export default function JevAnalysisPage() {
           {/* End Hour */}
           <div className="flex items-center gap-2 bg-white/[0.03] p-2.5 rounded-xl border border-white/[0.07]">
             <Clock className="w-3.5 h-3.5 text-[#e5787f]" />
-            <span className="text-[#9a9ca3]">تا ساعت:</span>
+            <span className="text-[#9a9ca3]">To:</span>
             <select
               value={endHour ?? ""}
               onChange={(e) => {
@@ -2633,7 +2907,7 @@ export default function JevAnalysisPage() {
               }}
               className="bg-[#0f1013] text-white border border-white/[0.15] rounded px-2 py-1 flex-1 focus:outline-none focus:border-[#e5787f]"
             >
-              <option value="">پایان (24:00)</option>
+              <option value="">End (24:00)</option>
               {Array.from({ length: 24 }).map((_, i) => (
                 <option key={i + 1} value={i + 1}>
                   {(i + 1).toString().padStart(2, "0")}:00 ({i + 1 === 14 ? "2 PM" : i + 1 === 2 ? "2 AM" : `${i + 1}:00`})
@@ -2651,28 +2925,28 @@ export default function JevAnalysisPage() {
               }}
               className="w-full text-center py-2 px-3 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] text-[#9a9ca3] hover:text-white border border-white/[0.08] transition-colors"
             >
-              بازنشانی بازه زمانی (کل داده‌ها)
+              Reset time window (all data)
             </button>
           </div>
         </div>
       </div>
 
-      {/* INTERACTIVE CURVE CHART COMPONENT (رسم منحنی مقادیر) */}
+      {/* INTERACTIVE CURVE CHART COMPONENT (value curve chart) */}
       <div className="bg-[#131418] border border-[rgba(190,190,200,0.2)] rounded-2xl p-5 space-y-4 shadow-2xl relative">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-[#d4b063]" />
-              منحنی تغییرات مقادیر در بازه انتخابی (Interactive Value Curves)
+              Value curves over the selected window (Interactive Value Curves)
             </h2>
             <p className="text-[11px] text-[#9a9ca3] mt-0.5">
-              نمایش همزمان و تطبیق منحنی اسکور Jev، درصدهای بازار و Fair Value با حرکت موس روی نمودار
+              Compare the Jev score curve, market percentages and Fair Value side by side by hovering over the chart
             </p>
           </div>
 
           {/* Curve Toggles */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-[#9a9ca3] text-[11px]">منحنی‌های فعال:</span>
+            <span className="text-[#9a9ca3] text-[11px]">Active curves:</span>
 
             {/* Signal Ticks Toggle Button */}
             <button
@@ -2682,15 +2956,15 @@ export default function JevAnalysisPage() {
                   ? "bg-gradient-to-r from-[#6aa9d8]/20 via-[#5fbf9a]/15 to-[#d8646a]/20 border-[#6aa9d8] text-white font-bold shadow-sm"
                   : "bg-white/[0.03] border-white/[0.1] text-[#73757c] opacity-60"
               }`}
-              title="نمایش تیک‌های شرطی آبی و قرمز روی نقاط منحنی"
+              title="Show blue and red conditional ticks on curve points"
             >
               <div className="flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-[#6aa9d8]" />
                 <span className="w-2 h-2 rounded-full bg-[#d8646a]" />
               </div>
-              <span>تیک‌های سیگنال</span>
+              <span>Signal ticks</span>
               <span className="text-[10px] font-mono opacity-85 px-1.5 py-0.2 rounded bg-black/40">
-                {bullishMatches.length} آبی / {bearishMatches.length} قرمز
+                {bullishMatches.length} blue / {bearishMatches.length} red
               </span>
             </button>
 
@@ -2702,10 +2976,10 @@ export default function JevAnalysisPage() {
                   ? "bg-[#6aa9d8]/20 border-[#6aa9d8] text-[#6aa9d8] font-bold"
                   : "bg-white/[0.04] border-white/[0.1] text-[#9a9ca3] hover:text-white"
               }`}
-              title="تنظیم شروط مقادیر اسکور و درصد اطمینان برای تیک‌های آبی و قرمز"
+              title="Set score and confidence thresholds for the blue and red ticks"
             >
               <Settings2 className="w-3.5 h-3.5" />
-              <span>تنظیم شروط تیک‌ها</span>
+              <span>Tick conditions</span>
               <ChevronDown className={`w-3 h-3 transition-transform ${showSignalSettings ? "rotate-180" : ""}`} />
             </button>
 
@@ -2718,7 +2992,7 @@ export default function JevAnalysisPage() {
               }`}
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#a795d6]" />
-              اسکور Jev (0-4)
+              Jev Score (0-4)
             </button>
 
             <button
@@ -2728,10 +3002,10 @@ export default function JevAnalysisPage() {
                   ? "bg-[#6aa9d8]/20 border-[#6aa9d8] text-[#6aa9d8] font-bold"
                   : "bg-white/[0.03] border-white/[0.1] text-[#73757c] opacity-60"
               }`}
-              title="نمایش منحنی اسکور مدل Kev-4b (۰ تا ۴)"
+              title="Show the Kev-4b model score curve (0 to 4)"
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#6aa9d8]" />
-              اسکور Kev-4b (0-4)
+              Kev-4b Score (0-4)
             </button>
 
             <button
@@ -2741,10 +3015,10 @@ export default function JevAnalysisPage() {
                   ? "bg-[#b58ac9]/20 border-[#b58ac9] text-[#b58ac9] font-bold"
                   : "bg-white/[0.03] border-white/[0.1] text-[#73757c] opacity-60"
               }`}
-              title="نمایش منحنی اسکور مدل Span-01 (۰ تا ۴)"
+              title="Show the Span-01 model score curve (0 to 4)"
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#b58ac9]" />
-              اسکور Span-01 (0-4)
+              Span-01 Score (0-4)
             </button>
 
             <button
@@ -2756,7 +3030,7 @@ export default function JevAnalysisPage() {
               }`}
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#cfad4e]" />
-              اطمینان اسکور Jev (%)
+              Jev Score Confidence (%)
             </button>
 
             <button
@@ -2768,7 +3042,7 @@ export default function JevAnalysisPage() {
               }`}
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#5fbf9a]" />
-              1H Up % بازار
+              1H Up % market
             </button>
 
             <button
@@ -2780,7 +3054,7 @@ export default function JevAnalysisPage() {
               }`}
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#6aa9d8]" />
-              15M Up % بازار
+              15M Up % market
             </button>
 
             <button
@@ -2796,6 +3070,19 @@ export default function JevAnalysisPage() {
             </button>
 
             <button
+              onClick={() => setVisibleCurves((p) => ({ ...p, fairClaude: !p.fairClaude }))}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-all ${
+                visibleCurves.fairClaude
+                  ? "bg-[#d97757]/20 border-[#d97757] text-[#d97757] font-bold"
+                  : "bg-white/[0.03] border-white/[0.1] text-[#73757c] opacity-60"
+              }`}
+              title="Claude 1H fair value (only the CL dataset has it)"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-[#d97757]" />
+              Fair Value Claude
+            </button>
+
+            <button
               onClick={() => setVisibleCurves((p) => ({ ...p, up5m: !p.up5m }))}
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-all ${
                 visibleCurves.up5m
@@ -2804,7 +3091,7 @@ export default function JevAnalysisPage() {
               }`}
             >
               <span className="w-2.5 h-2.5 rounded-full bg-[#d68aa8]" />
-              5M Up % بازار
+              5M Up % market
             </button>
           </div>
         </div>
@@ -2816,7 +3103,7 @@ export default function JevAnalysisPage() {
               <div className="flex items-center gap-2">
                 <Sliders className="w-4 h-4 text-[#6aa9d8]" />
                 <span className="font-bold text-white text-sm">
-                  تعریف شروط تیک‌های روی منحنی (Conditional Signal Markers):
+                  Define curve tick conditions (Conditional Signal Markers):
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -2827,13 +3114,13 @@ export default function JevAnalysisPage() {
                     onChange={(e) => setSignals((p) => ({ ...p, enabled: e.target.checked }))}
                     className="accent-[#6aa9d8] rounded"
                   />
-                  <span>فعال‌سازی سیستم تیک‌های شرطی</span>
+                  <span>Enable conditional tick system</span>
                 </label>
                 <button
                   onClick={() => setSignals(DEFAULT_SIGNAL_CONFIG)}
                   className="text-[11px] px-2.5 py-1 rounded bg-white/[0.05] hover:bg-white/[0.1] text-[#9a9ca3] hover:text-white transition-colors"
                 >
-                  بازنشانی شروط
+                  Reset conditions
                 </button>
               </div>
             </div>
@@ -2844,15 +3131,15 @@ export default function JevAnalysisPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 font-bold text-[#6aa9d8]">
                     <span className="w-3.5 h-3.5 rounded-full bg-[#6aa9d8] flex items-center justify-center text-[10px] text-black font-black">✓</span>
-                    <span>شرط تیک آبی (صعودی / Bullish):</span>
+                    <span>Blue tick condition (Bullish):</span>
                   </div>
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#6aa9d8]/15 text-[#6aa9d8] font-bold">
-                    {bullishMatches.length} مورد فعال
+                    {bullishMatches.length} matches
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1">حداقل اسکور (0 - 4):</label>
+                    <label className="text-[#9a9ca3] block mb-1">Min score (0 - 4):</label>
                     <input
                       type="number"
                       step="0.1"
@@ -2869,7 +3156,24 @@ export default function JevAnalysisPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1">حداقل اطمینان (%):</label>
+                    <label className="text-[#9a9ca3] block mb-1">Max score (0 - 4):</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="4"
+                      value={signals.bullishMaxScore ?? 4}
+                      onChange={(e) =>
+                        setSignals((p) => ({
+                          ...p,
+                          bullishMaxScore: parseFloat(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full bg-[#0f1013] text-white border border-[#6aa9d8]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#6aa9d8]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[#9a9ca3] block mb-1">Min confidence (%):</label>
                     <input
                       type="number"
                       step="5"
@@ -2885,9 +3189,26 @@ export default function JevAnalysisPage() {
                       className="w-full bg-[#0f1013] text-white border border-[#6aa9d8]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#6aa9d8]"
                     />
                   </div>
+                  <div>
+                    <label className="text-[#9a9ca3] block mb-1">Max confidence (%):</label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      max="100"
+                      value={signals.bullishMaxConf ?? 100}
+                      onChange={(e) =>
+                        setSignals((p) => ({
+                          ...p,
+                          bullishMaxConf: parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      className="w-full bg-[#0f1013] text-white border border-[#6aa9d8]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#6aa9d8]"
+                    />
+                  </div>
                 </div>
                 <p className="text-[10px] text-[#6aa9d8]">
-                  قانون تیک آبی: اسکور بالای {signals.bullishScore} و همزمان اطمینان اسکور حداقل {signals.bullishMinConf}%
+                  Blue tick rule: score above {signals.bullishScore} up to {signals.bullishMaxScore ?? 4} and score confidence between {signals.bullishMinConf}% and {signals.bullishMaxConf ?? 100}%
                 </p>
               </div>
 
@@ -2896,15 +3217,32 @@ export default function JevAnalysisPage() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 font-bold text-[#d8646a]">
                     <span className="w-3.5 h-3.5 rounded-full bg-[#d8646a] flex items-center justify-center text-[10px] text-white font-black">✓</span>
-                    <span>شرط تیک قرمز (نزولی / Bearish):</span>
+                    <span>Red tick condition (Bearish):</span>
                   </div>
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#d8646a]/15 text-[#d8646a] font-bold">
-                    {bearishMatches.length} مورد فعال
+                    {bearishMatches.length} matches
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[11px]">
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1">حداکثر اسکور (0 - 4):</label>
+                    <label className="text-[#9a9ca3] block mb-1">Min score (0 - 4):</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="4"
+                      value={signals.bearishMinScore ?? 0}
+                      onChange={(e) =>
+                        setSignals((p) => ({
+                          ...p,
+                          bearishMinScore: parseFloat(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full bg-[#0f1013] text-white border border-[#d8646a]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#d8646a]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[#9a9ca3] block mb-1">Max score (0 - 4):</label>
                     <input
                       type="number"
                       step="0.1"
@@ -2921,7 +3259,7 @@ export default function JevAnalysisPage() {
                     />
                   </div>
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1">حداقل اطمینان (%):</label>
+                    <label className="text-[#9a9ca3] block mb-1">Min confidence (%):</label>
                     <input
                       type="number"
                       step="5"
@@ -2937,9 +3275,26 @@ export default function JevAnalysisPage() {
                       className="w-full bg-[#0f1013] text-white border border-[#d8646a]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#d8646a]"
                     />
                   </div>
+                  <div>
+                    <label className="text-[#9a9ca3] block mb-1">Max confidence (%):</label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      max="100"
+                      value={signals.bearishMaxConf ?? 100}
+                      onChange={(e) =>
+                        setSignals((p) => ({
+                          ...p,
+                          bearishMaxConf: parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      className="w-full bg-[#0f1013] text-white border border-[#d8646a]/40 rounded-lg px-2.5 py-1 font-mono font-bold focus:outline-none focus:border-[#d8646a]"
+                    />
+                  </div>
                 </div>
                 <p className="text-[10px] text-[#d8646a]">
-                  قانون تیک قرمز: اسکور کمتر از {signals.bearishScore} و همزمان اطمینان اسکور حداقل {signals.bearishMinConf}%
+                  Red tick rule: score from {signals.bearishMinScore ?? 0} to below {signals.bearishScore} and score confidence between {signals.bearishMinConf}% and {signals.bearishMaxConf ?? 100}%
                 </p>
               </div>
 
@@ -2947,28 +3302,29 @@ export default function JevAnalysisPage() {
               <div className="bg-[#131418] p-3 rounded-xl border border-white/[0.1] space-y-2 flex flex-col justify-between">
                 <div className="space-y-2">
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1 font-medium">مدل هوش‌مصنوعی مبنای سیگنال:</label>
+                    <label className="text-[#9a9ca3] block mb-1 font-medium">AI model for signal basis:</label>
                     <select
                       value={signals.modelSource || "jev"}
                       onChange={(e) =>
                         setSignals((p) => ({
                           ...p,
-                          modelSource: e.target.value as "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "consensus",
+                          modelSource: e.target.value as "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "liquid" | "consensus",
                         }))
                       }
                       className="w-full bg-[#0f1013] text-white border border-white/[0.15] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#6aa9d8]"
                     >
-                      <option value="jev">مدل Jev (انحصاری Jev - پیش‌فرض)</option>
-                      <option value="kev">مدل Kev-4b (اسکور ۰ تا ۴)</option>
-                      <option value="span">مدل Span-01 (اسکور ۰ تا ۴)</option>
-                      <option value="solar">مدل Solar-Decide (اسکور ۰ تا ۴)</option>
-                      <option value="tev">مدل Tev-4b (اسکور ۰ تا ۴)</option>
-                      <option value="mercury">مدل Mercury-Decide (اسکور ۰ تا ۴)</option>
-                      <option value="consensus">اجماع هر ۳ مدل (میانگین اسکور)</option>
+                      <option value="jev">Jev model (Jev only - default)</option>
+                      <option value="kev">Kev-4b model (score 0 to 4)</option>
+                      <option value="span">Span-01 model (score 0 to 4)</option>
+                      <option value="solar">Solar-Decide model (score 0 to 4)</option>
+                      <option value="tev">Tev-4b model (score 0 to 4)</option>
+                      <option value="mercury">Mercury-Decide model (score 0 to 4)</option>
+                      <option value="liquid">Liquid-D1 model (score 0 to 4)</option>
+                      <option value="consensus">Consensus of all 3 models (average score)</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-[#9a9ca3] block mb-1 font-medium">مبنای سنجش درصد اطمینان:</label>
+                    <label className="text-[#9a9ca3] block mb-1 font-medium">Confidence measure basis:</label>
                     <select
                       value={signals.confidenceType}
                       onChange={(e) =>
@@ -2979,13 +3335,13 @@ export default function JevAnalysisPage() {
                       }
                       className="w-full bg-[#0f1013] text-white border border-white/[0.15] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#6aa9d8]"
                     >
-                      <option value="score">فقط درصد اطمینان اسکور (Score Confidence - قانون اصلی)</option>
-                      <option value="direction">فقط درصد اطمینان جهت (Direction Confidence)</option>
+                      <option value="score">Score confidence only (Score Confidence - main rule)</option>
+                      <option value="direction">Direction confidence only (Direction Confidence)</option>
                     </select>
                   </div>
                 </div>
                 <div className="text-[11px] text-[#9a9ca3] bg-white/[0.03] p-2 rounded-lg border border-white/[0.05]">
-                  💡 تیک‌ها به همراه خط چین راهنما مستقیماً در صورت برقراری همزمان هر دو شرط اسکور و اطمینان اسکور رسم می‌شوند.
+                  💡 Ticks, together with a dashed guide line, are drawn only when both the score and score-confidence conditions are met.
                 </div>
               </div>
             </div>
@@ -2996,13 +3352,13 @@ export default function JevAnalysisPage() {
         {chartData.length < 2 ? (
           <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-[#9a9ca3] bg-white/[0.02] rounded-xl border border-dashed border-white/[0.08]">
             <Clock className="w-8 h-8 text-[#73757c] mb-2" />
-            <p className="text-xs font-semibold text-white">برای این بازه داده کافی برای رسم منحنی وجود ندارد</p>
+            <p className="text-xs font-semibold text-white">Not enough data to draw a curve for this window</p>
             <p className="text-[11px] text-[#73757c] mt-1">
-              لطفاً بازه زمانی را وسیع‌تر انتخاب کنید (مثلاً تمام ساعات یا ساعت‌های دیگر که داده ثبت شده است).
+              Please choose a wider time window (e.g. all hours, or other hours that have recorded data).
             </p>
           </div>
         ) : (
-          <div className="relative overflow-hidden select-none">
+          <div ref={setChartEl} className="relative overflow-hidden select-none">
             <svg
               ref={svgRef}
               viewBox={`0 0 ${chartWidth} ${chartHeight}`}
@@ -3084,6 +3440,18 @@ export default function JevAnalysisPage() {
                   stroke="#d4a24f"
                   strokeWidth="2"
                   strokeDasharray="3 3"
+                  className="transition-all duration-300"
+                />
+              )}
+
+              {/* CURVE: Fair Value Claude */}
+              {visibleCurves.fairClaude && curveCoordinates?.fairClaudePath && (
+                <path
+                  d={curveCoordinates.fairClaudePath}
+                  fill="none"
+                  stroke="#d97757"
+                  strokeWidth="2"
+                  strokeDasharray="6 3"
                   className="transition-all duration-300"
                 />
               )}
@@ -3263,7 +3631,7 @@ export default function JevAnalysisPage() {
                             textAnchor="middle"
                             fontFamily="sans-serif"
                           >
-                            {isBull ? "تیک صعودی" : "تیک نزولی"}
+                            {isBull ? "Bullish tick" : "Bearish tick"}
                           </text>
                         </g>
                       )}
@@ -3347,7 +3715,8 @@ export default function JevAnalysisPage() {
 
               {/* X Axis Time Labels */}
               {curveCoordinates &&
-                [0, Math.floor(chartData.length / 4), Math.floor(chartData.length / 2), Math.floor((chartData.length * 3) / 4), chartData.length - 1].map(
+                // a Set: with fewer than 5 points the indices repeat, and repeated keys make React warn
+                [...new Set([0, Math.floor(chartData.length / 4), Math.floor(chartData.length / 2), Math.floor((chartData.length * 3) / 4), chartData.length - 1])].map(
                   (idx) => {
                     const item = chartData[idx];
                     if (!item) return null;
@@ -3426,7 +3795,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.score != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">اسکور Jev:</span>
+                      <span className="text-[#9a9ca3]">Jev score:</span>
                       <span className="font-mono text-[#a795d6] font-bold tabular-nums">
                         {hoveredItem.score.toFixed(2)} / 4.0
                       </span>
@@ -3435,7 +3804,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.score_confidence != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">اطمینان اسکور:</span>
+                      <span className="text-[#9a9ca3]">Score confidence:</span>
                       <span className="font-mono text-[#cfad4e] font-bold tabular-nums">
                         {hoveredItem.score_confidence}%
                       </span>
@@ -3444,7 +3813,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.kev_score != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">اسکور Kev-4b:</span>
+                      <span className="text-[#9a9ca3]">Kev-4b score:</span>
                       <span className="font-mono text-[#6aa9d8] font-bold tabular-nums">
                         {hoveredItem.kev_score.toFixed(2)} / 4.0 {hoveredItem.kev_confidence != null ? `(${hoveredItem.kev_confidence}%)` : ""}
                       </span>
@@ -3453,7 +3822,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.span_score != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">اسکور Span-01:</span>
+                      <span className="text-[#9a9ca3]">Span-01 score:</span>
                       <span className="font-mono text-[#b58ac9] font-bold tabular-nums">
                         {hoveredItem.span_score.toFixed(2)} / 4.0 {hoveredItem.span_confidence != null ? `(${hoveredItem.span_confidence}%)` : ""}
                       </span>
@@ -3462,7 +3831,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.up_1h_num != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">1H Up بازار:</span>
+                      <span className="text-[#9a9ca3]">1H Up market:</span>
                       <span className="font-mono text-[#5fbf9a] font-bold tabular-nums">
                         {hoveredItem.up_1h_num}%
                       </span>
@@ -3471,7 +3840,7 @@ export default function JevAnalysisPage() {
 
                   {hoveredItem.up_15m_num != null && (
                     <div className="flex items-center justify-between">
-                      <span className="text-[#9a9ca3]">15M Up بازار:</span>
+                      <span className="text-[#9a9ca3]">15M Up market:</span>
                       <span className="font-mono text-[#6aa9d8] font-medium tabular-nums">
                         {hoveredItem.up_15m_num}%
                       </span>
@@ -3486,6 +3855,15 @@ export default function JevAnalysisPage() {
                       </span>
                     </div>
                   )}
+
+                  {hoveredItem.fair_claude != null && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#9a9ca3]">Fair Value Claude:</span>
+                      <span className="font-mono text-[#d97757] font-medium tabular-nums">
+                        {hoveredItem.fair_claude.toFixed(1)}¢
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -3493,8 +3871,8 @@ export default function JevAnalysisPage() {
         )}
 
         <div className="flex flex-wrap items-center justify-between text-[11px] text-[#73757c] pt-2 border-t border-white/[0.06]">
-          <span>محور عمودی چپ: اسکور هوش‌مصنوعی (۰ تا ۴) · محور عمودی راست: درصد بازار (۰٪ تا ۱۰۰٪)</span>
-          <span>تعداد نقاط متصل روی منحنی: {chartData.length} مقطع ۵ دقیقه‌ای</span>
+          <span>Left vertical axis: AI score (0 to 4) · Right vertical axis: market percentage (0% to 100%)</span>
+          <span>Points connected on the curve: {chartData.length} 5-minute intervals</span>
         </div>
       </div>
 
@@ -3590,12 +3968,23 @@ export default function JevAnalysisPage() {
         </div>
       </div>
 
+      {/* Field filters: ranges and conditions on any field, applied before the direction/signal filters below */}
+      <FieldFilterPanel
+        fields={filterFields}
+        groups={fieldFilters}
+        onChange={setFieldFilters}
+        quickFieldIds={quickFilterFieldIds}
+        matched={baseFilteredData.length}
+        total={windowData.length}
+        anchorRef={filterPanelRef}
+      />
+
       {/* Filter & Search Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-[#181a1e]/70 p-3 rounded-xl border border-[rgba(190,190,200,0.12)]">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1.5 text-xs text-[#9a9ca3]">
             <Filter className="w-3.5 h-3.5 text-[#6aa9d8]" />
-            <span>فیلتر جهت:</span>
+            <span>Direction filter:</span>
           </div>
           <button
             onClick={() => setDirFilter("ALL")}
@@ -3605,7 +3994,7 @@ export default function JevAnalysisPage() {
                 : "text-[#9a9ca3] hover:text-white"
             }`}
           >
-            همه ({data.length})
+            All ({data.length})
           </button>
           <button
             onClick={() => setDirFilter("UP")}
@@ -3615,7 +4004,7 @@ export default function JevAnalysisPage() {
                 : "text-[#9a9ca3] hover:text-[#5fbf9a]"
             }`}
           >
-            فقط صعودی UP ({stats.upCount})
+            UP only ({stats.upCount})
           </button>
           <button
             onClick={() => setDirFilter("DOWN")}
@@ -3625,7 +4014,7 @@ export default function JevAnalysisPage() {
                 : "text-[#9a9ca3] hover:text-[#e5787f]"
             }`}
           >
-            فقط نزولی DOWN ({stats.downCount})
+            DOWN only ({stats.downCount})
           </button>
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 hidden sm:block" />
@@ -3637,10 +4026,10 @@ export default function JevAnalysisPage() {
                 ? "bg-[#5fbf9a]/25 text-[#5fbf9a] font-semibold border border-[#5fbf9a]/50 shadow-sm"
                 : "text-[#9a9ca3] hover:text-[#5fbf9a]"
             }`}
-            title="فقط اسنپ‌شات‌هایی که هر ۳ مدل (Jev + Kev + Span) صعود کامل ۳/۳ داده‌اند"
+            title="Only snapshots where all 3 models (Jev + Kev + Span) gave a full 3/3 UP"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-[#5fbf9a]" />
-            <span>۳/۳ صعود ({stats.consensusUp3Count})</span>
+            <span>3/3 UP ({stats.consensusUp3Count})</span>
           </button>
 
           <button
@@ -3650,10 +4039,10 @@ export default function JevAnalysisPage() {
                 ? "bg-[#e5787f]/25 text-[#e5787f] font-semibold border border-[#e5787f]/50 shadow-sm"
                 : "text-[#9a9ca3] hover:text-[#e5787f]"
             }`}
-            title="فقط اسنپ‌شات‌هایی که هر ۳ مدل (Jev + Kev + Span) نزول کامل ۳/۳ داده‌اند"
+            title="Only snapshots where all 3 models (Jev + Kev + Span) gave a full 3/3 DOWN"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-[#e5787f]" />
-            <span>۳/۳ نزول ({stats.consensusDown3Count})</span>
+            <span>3/3 DOWN ({stats.consensusDown3Count})</span>
           </button>
 
           <button
@@ -3663,26 +4052,26 @@ export default function JevAnalysisPage() {
                 ? "bg-[#a795d6]/25 text-[#a795d6] font-semibold border border-[#a795d6]/50 shadow-sm"
                 : "text-[#9a9ca3] hover:text-[#a795d6]"
             }`}
-            title="هر نوع اجماع قاطع ۳ از ۳ (چه صعود و چه نزول)"
+            title="Any decisive 3-of-3 consensus (UP or DOWN)"
           >
-            <span>⚡ هر ۳/۳ ({stats.consensusFull3Count})</span>
+            <span>⚡ Any 3/3 ({stats.consensusFull3Count})</span>
           </button>
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 hidden sm:block" />
           <button
             onClick={() => setDirFilter("SIGNALS")}
-            title={`نمایش تمام اسنپ‌شات‌های دارای سیگنال (${stats.rawSignalSnapshots} اسنپ‌شات ۵ دقیقه‌ای)`}
+            title={`Show all snapshots with a signal (${stats.rawSignalSnapshots} 5-minute snapshots)`}
             className={`text-xs px-2.5 py-1 rounded-md transition-all ${
               dirFilter === "SIGNALS"
                 ? "bg-[#6aa9d8]/20 text-[#6aa9d8] font-semibold border border-[#6aa9d8]/40"
                 : "text-[#9a9ca3] hover:text-[#6aa9d8]"
             }`}
           >
-            🎯 تمام سیگنال‌ها ({stats.rawSignalSnapshots})
+            🎯 All signals ({stats.rawSignalSnapshots})
           </button>
           <button
             onClick={() => setDirFilter("FIRST_HOURLY_SIGNAL")}
-            title="فقط اولین سیگنال صادر شده در هر ساعت (حذف سیگنال‌های تکراری با جهت یکسان در همان ساعت)"
+            title="Only the first signal issued each hour (removes repeat signals in the same direction within that hour)"
             className={`text-xs px-2.5 py-1 rounded-md transition-all flex items-center gap-1.5 ${
               dirFilter === "FIRST_HOURLY_SIGNAL"
                 ? "bg-amber-500/25 text-amber-300 font-semibold border border-amber-500/50 shadow-sm"
@@ -3690,40 +4079,40 @@ export default function JevAnalysisPage() {
             }`}
           >
             <Zap className="w-3 h-3 text-amber-400" />
-            <span>⚡ اولین سیگنال هر ساعت ({stats.signalCount})</span>
+            <span>⚡ First signal each hour ({stats.signalCount})</span>
           </button>
           <button
             onClick={() => setDirFilter("WINS")}
-            title={`${stats.winCount} کندل ساعتی برنده`}
+            title={`${stats.winCount} winning hourly candles`}
             className={`text-xs px-2.5 py-1 rounded-md transition-all ${
               dirFilter === "WINS"
                 ? "bg-emerald-500/25 text-emerald-300 font-semibold border border-emerald-500/40"
                 : "text-[#9a9ca3] hover:text-emerald-400"
             }`}
           >
-            🏆 برد ({stats.winCount})
+            🏆 Wins ({stats.winCount})
           </button>
           <button
             onClick={() => setDirFilter("LOSSES")}
-            title={`${stats.lossCount} کندل ساعتی بازنده`}
+            title={`${stats.lossCount} losing hourly candles`}
             className={`text-xs px-2.5 py-1 rounded-md transition-all ${
               dirFilter === "LOSSES"
                 ? "bg-rose-500/25 text-rose-300 font-semibold border border-rose-500/40"
                 : "text-[#9a9ca3] hover:text-rose-400"
             }`}
           >
-            ❌ باخت ({stats.lossCount})
+            ❌ Losses ({stats.lossCount})
           </button>
           {stats.winRate != null && (
             <div
               className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold"
-              title={`${stats.winCount} برد از ${stats.winCount + stats.lossCount} کندل ساعتی بسته‌شده (${stats.rawSignalSnapshots} اسنپ‌شات کل)`}
+              title={`${stats.winCount} wins out of ${stats.winCount + stats.lossCount} closed hourly candles (${stats.rawSignalSnapshots} snapshots total)`}
             >
-              <span>وین‌ریت ساعتی:</span>
+              <span>Hourly win rate:</span>
               <span className="font-mono text-sm">{stats.winRate}%</span>
               {stats.pendingCount > 0 && (
                 <span className="text-[10px] text-amber-300 font-normal mr-1">
-                  ({stats.pendingCount} زنده)
+                  ({stats.pendingCount} live)
                 </span>
               )}
             </div>
@@ -3738,7 +4127,7 @@ export default function JevAnalysisPage() {
                 ? "bg-amber-500/15 text-amber-300 border-amber-500/40 font-medium"
                 : "bg-white/[0.04] text-[#9a9ca3] border-white/[0.08] hover:bg-white/[0.08] hover:text-white"
             }`}
-            title="عدم نمایش سیگنال‌های تکراری با جهت یکسان در طول همان ساعت (فقط اولین اسنپ‌شات سیگنال‌دار در هر ساعت نمایش داده می‌شود)"
+            title="Hide repeat signals in the same direction within the same hour (only the first snapshot with a signal each hour is shown)"
           >
             <input
               type="checkbox"
@@ -3748,22 +4137,22 @@ export default function JevAnalysisPage() {
             />
             <span className="flex items-center gap-1">
               <Zap className="w-3 h-3 text-amber-400" />
-              <span>فقط اولین سیگنال ساعت (حذف تکراری‌های هم‌جهت)</span>
+              <span>First signal of hour only (hide same-direction repeats)</span>
             </span>
           </label>
           {sortConfig && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#6aa9d8]/15 border border-[#6aa9d8]/30 text-[#6aa9d8] text-xs font-medium animate-in fade-in">
               <span>
-                مرتب‌سازی:{" "}
+                Sort:{" "}
                 {sortConfig.key === "time"
-                  ? "زمان"
+                  ? "Time"
                   : ALL_COLUMNS.find((c) => c.id === sortConfig.key)?.label || sortConfig.key}{" "}
-                ({sortConfig.dir === "desc" ? "نزولی ↓" : "صعودی ↑"})
+                ({sortConfig.dir === "desc" ? "descending ↓" : "ascending ↑"})
               </span>
               <button
                 onClick={() => setSortConfig(null)}
                 className="hover:text-white mr-1 text-sm font-bold transition-colors"
-                title="حذف مرتب‌سازی و بازگشت به ترتیب پیش‌فرض زمانی"
+                title="Clear sorting and return to the default time order"
               >
                 ✕
               </button>
@@ -3774,7 +4163,7 @@ export default function JevAnalysisPage() {
             <Search className="w-3.5 h-3.5 text-[#73757c] absolute right-2.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="جستجو در زمان، ساعت یا اسکور..."
+              placeholder="Search by time, hour or score..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="bg-white/[0.05] border border-white/[0.1] rounded-lg pr-8 pl-3 py-1 text-xs text-white placeholder-[#73757c] focus:outline-none focus:border-[#6aa9d8] w-52"
@@ -3785,7 +4174,7 @@ export default function JevAnalysisPage() {
             onClick={exportCsv}
             disabled={sortedData.length === 0}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-xs text-[#bdbdb8] border border-white/[0.08] transition-all disabled:opacity-50"
-            title="دانلود خروجی CSV"
+            title="Download CSV export"
           >
             <Download className="w-3 h-3 text-[#6aa9d8]" />
             <span className="hidden sm:inline">CSV</span>
@@ -3795,7 +4184,7 @@ export default function JevAnalysisPage() {
             onClick={exportPdf}
             disabled={sortedData.length === 0}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#6aa9d8]/15 hover:bg-[#6aa9d8]/25 text-xs text-[#6aa9d8] border border-[#6aa9d8]/30 transition-all disabled:opacity-50 font-medium"
-            title="چاپ و دانلود خروجی PDF"
+            title="Print / download PDF export"
           >
             <Printer className="w-3 h-3" />
             <span className="hidden sm:inline">PDF</span>
@@ -3808,27 +4197,27 @@ export default function JevAnalysisPage() {
         {loading ? (
           <div className="p-12 text-center text-xs text-[#9a9ca3] flex flex-col items-center justify-center gap-3">
             <RefreshCw className="w-6 h-6 animate-spin text-[#6aa9d8]" />
-            <span>در حال بارگذاری فایل‌های تاریخی Jev...</span>
+            <span>Loading Jev historical files...</span>
           </div>
         ) : error ? (
           <div className="p-8 text-center text-xs text-[#e5787f]">{error}</div>
         ) : sortedData.length === 0 ? (
           <div className="p-12 text-center text-xs text-[#9a9ca3]">
-            هیچ داده‌ای مطابق با بازه زمانی یا فیلترهای انتخابی یافت نشد.
+            No data matches the selected time window or filters.
           </div>
         ) : (
           <div className="overflow-x-auto max-h-[650px] overflow-y-auto">
             <table className="w-full text-right text-xs border-collapse">
               <thead className="sticky top-0 z-10 bg-[#181a1e] text-[#9a9ca3] border-b border-white/[0.1] text-[11px] tracking-wider">
                 <tr>
-                  <th className="py-3.5 px-4 font-semibold text-center w-14">ردیف</th>
+                  <th className="py-3.5 px-4 font-semibold text-center w-14">No.</th>
                   <th
                     onClick={() => handleSort("time")}
                     className="py-3.5 px-4 font-semibold cursor-pointer select-none hover:text-white transition-colors group"
-                    title="برای مرتب‌سازی بر اساس زمان و تاریخ کلیک کنید"
+                    title="Click to sort by time and date"
                   >
                     <div className="flex items-center gap-1.5">
-                      <span>زمان و ساعت (ET)</span>
+                      <span>Date & time (ET)</span>
                       {sortConfig?.key === "time" ? (
                         sortConfig.dir === "desc" ? (
                           <ArrowDown className="w-3.5 h-3.5 text-[#6aa9d8]" />
@@ -3847,10 +4236,27 @@ export default function JevAnalysisPage() {
                         key={col.id}
                         onClick={() => handleSort(col.id)}
                         className="py-3.5 px-4 font-semibold cursor-pointer select-none hover:text-white transition-colors group"
-                        title={`برای مرتب‌سازی بر اساس ${col.label} کلیک کنید`}
+                        title={`Click to sort by ${col.label}`}
                       >
                         <div className="flex items-center gap-1.5">
                           <span>{col.label}</span>
+                          {filterFieldMap.has(col.id) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                addFieldFilter(col.id);
+                              }}
+                              className="p-0.5 rounded hover:bg-white/[0.08]"
+                              title={filteredFieldIds.has(col.id) ? `Filtered. Add another condition on ${col.label}` : `Filter on ${col.label}`}
+                            >
+                              <Filter
+                                className={`w-3 h-3 ${
+                                  filteredFieldIds.has(col.id) ? "text-[#d97757]" : "text-[#73757c] opacity-40 group-hover:opacity-100"
+                                }`}
+                              />
+                            </button>
+                          )}
                           {isSorted ? (
                             sortConfig.dir === "desc" ? (
                               <ArrowDown className="w-3.5 h-3.5 text-[#6aa9d8]" />
@@ -3864,7 +4270,7 @@ export default function JevAnalysisPage() {
                       </th>
                     );
                   })}
-                  <th className="py-3.5 px-4 font-semibold text-center">عملیات</th>
+                  <th className="py-3.5 px-4 font-semibold text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.05]">
@@ -3912,14 +4318,14 @@ export default function JevAnalysisPage() {
                           className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#6aa9d8]/15 hover:bg-[#6aa9d8]/25 text-[#6aa9d8] text-[11px] transition-colors"
                         >
                           <Eye className="w-3 h-3" />
-                          مشاهده
+                          View
                         </button>
                         <a
-                          href={`/api/jev/history?file=${row.filename}`}
+                          href={withHistorySet(`/api/jev/history?file=${row.filename}`)}
                           target="_blank"
                           rel="noreferrer"
                           className="p-1 rounded bg-white/[0.06] hover:bg-white/[0.12] text-[#9a9ca3] hover:text-white transition-colors"
-                          title="دانلود فایل JSON"
+                          title="Download JSON file"
                         >
                           <Download className="w-3 h-3" />
                         </a>
@@ -3940,21 +4346,21 @@ export default function JevAnalysisPage() {
               onClick={() => setVisibleRowsCount((prev) => prev + 100)}
               className="px-4 py-1.5 rounded-lg bg-[#6aa9d8]/20 hover:bg-[#6aa9d8]/30 text-[#6aa9d8] text-xs font-medium transition-colors"
             >
-              نمایش ۱۰۰ سطر دیگر ({Math.min(visibleRowsCount, sortedData.length)} از {sortedData.length})
+              Show 100 more rows ({Math.min(visibleRowsCount, sortedData.length)} of {sortedData.length})
             </button>
             <button
               type="button"
               onClick={() => setVisibleRowsCount(sortedData.length)}
               className="px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-[#9a9ca3] text-xs font-medium transition-colors"
             >
-              نمایش همه ({sortedData.length})
+              Show all ({sortedData.length})
             </button>
           </div>
         )}
 
         <div className="bg-[#181a1e]/90 border-t border-white/[0.08] px-4 py-2.5 flex items-center justify-between text-[11px] text-[#9a9ca3]">
-          <span>نمایش {Math.min(visibleRowsCount, sortedData.length)} از {filteredData.length} فایل اسنپ‌شات (در بازه انتخابی)</span>
-          <span>مسیر فایل‌ها در سرور: <code className="text-[#6aa9d8]">/jev/history/</code></span>
+          <span>Showing {Math.min(visibleRowsCount, sortedData.length)} of {filteredData.length} snapshot files (in the selected window)</span>
+          <span>Files path on the server: <code className="text-[#6aa9d8]">/jev/history/</code></span>
         </div>
       </div>
 
@@ -3966,17 +4372,17 @@ export default function JevAnalysisPage() {
               <div className="flex items-center gap-2">
                 <FileJson className="w-4 h-4 text-[#6aa9d8]" />
                 <span className="text-xs font-semibold text-white">
-                  محتوای کامل فایل: <b className="font-mono text-[#6aa9d8]">{selectedFileForModal}</b>
+                  Full file content: <b className="font-mono text-[#6aa9d8]">{selectedFileForModal}</b>
                 </span>
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href={`/api/jev/history?file=${selectedFileForModal}`}
+                  href={withHistorySet(`/api/jev/history?file=${selectedFileForModal}`)}
                   target="_blank"
                   rel="noreferrer"
                   className="px-2.5 py-1 rounded bg-white/[0.08] hover:bg-white/[0.15] text-[11px] text-[#bdbdb8] transition-colors"
                 >
-                  دانلود مستقیم
+                  Direct download
                 </a>
                 <button
                   type="button"
@@ -3991,7 +4397,7 @@ export default function JevAnalysisPage() {
             <div className="flex-1 overflow-auto p-4 bg-[#0f1013]">
               {fileLoading ? (
                 <div className="p-12 text-center text-xs text-[#9a9ca3]">
-                  در حال بازخوانی فایل JSON...
+                  Reloading JSON file...
                 </div>
               ) : (
                 <pre className="font-mono text-[11px] leading-relaxed text-[#bdbdb8] whitespace-pre selection:bg-[#6aa9d8]/30">

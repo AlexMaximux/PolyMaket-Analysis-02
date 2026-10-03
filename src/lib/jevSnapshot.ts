@@ -117,6 +117,9 @@ export async function generateJevSnapshot(coin = 'btc') {
       '1h': m1h?.book ?? null,
       '15m': m15?.book ?? null,
     },
+    // Only for the CL copy (src/lib/clSnapshot.ts): the model calls and saveHistoricalJevRecord pick their
+    // fields explicitly, so this never reaches an LLM or the original history files.
+    claude_model: data.modelClaude ?? null,
   };
 
   const jsonStr = JSON.stringify(payload, null, 2);
@@ -255,13 +258,15 @@ export const KEV_MODEL = 'jaredpalmer/kev-4b';
 export const SOLAR_MODEL = 'upstage/solar-decide';
 export const TEV_MODEL = 'togethercomputer/tev1-4b-experimental';
 export const MERCURY_MODEL = 'inception/mercury-decide:free';
+export const LIQUID_MODEL = 'liquid/d1';
 
 export const callKevDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(KEV_MODEL, 'Kev', snapshotData, apiKey);
 export const callSolarDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(SOLAR_MODEL, 'Solar', snapshotData, apiKey);
 export const callTevDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(TEV_MODEL, 'Tev', snapshotData, apiKey);
 export const callMercuryDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(MERCURY_MODEL, 'Mercury', snapshotData, apiKey);
+export const callLiquidDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(LIQUID_MODEL, 'Liquid', snapshotData, apiKey);
 
-/** Kev, Solar, Tev and Mercury take the same score + direction questions and return the same answer shape. */
+/** Kev, Solar, Tev, Mercury and Liquid take the same score + direction questions and return the same answer shape. */
 async function callStandardDecision(modelId: string, label: string, snapshotData: any, apiKey?: string) {
   const key = openRouterKey(apiKey);
   const coinLabel = snapshotData.coin_label || snapshotData.coin || 'Crypto';
@@ -373,6 +378,8 @@ export async function callSpanDecision(snapshotData: any, apiKey?: string) {
     fair_value_model: {
       model_15m: fv.model_15m != null ? (fv.model_15m * 100).toFixed(1) + '%' : 'N/A',
       model_5m: fv.model_5m != null ? (fv.model_5m * 100).toFixed(1) + '%' : 'N/A',
+      // only CL records carry this; the original records leave Span's prompt exactly as it was
+      ...(fv.claude != null ? { claude: (fv.claude * 100).toFixed(1) + '%' } : {}),
     },
   };
 
@@ -474,16 +481,41 @@ export async function callSpanDecision(snapshotData: any, apiKey?: string) {
   };
 }
 
-export async function callMultiModelDecisions(snapshotData: any, apiKey?: string) {
-  const enabled = getSetting('jev.models');
+/** The 3-model consensus: the Jev, Kev and Span directions, whichever of them have answered. */
+export function consensusOf(jev: any, kev: any, span: any) {
+  const votes = [jev?.direction, kev?.direction, span?.direction].filter(Boolean) as ('UP' | 'DOWN')[];
+  const upVotes = votes.filter(v => v === 'UP').length;
+  const downVotes = votes.filter(v => v === 'DOWN').length;
+  const totalVotes = votes.length;
+
+  let consensusDirection: 'UP' | 'DOWN' | 'SPLIT' | null = null;
+  if (upVotes > downVotes) consensusDirection = 'UP';
+  else if (downVotes > upVotes) consensusDirection = 'DOWN';
+  else if (totalVotes > 0) consensusDirection = 'SPLIT';
+
+  return {
+    direction: consensusDirection,
+    up_votes: upVotes,
+    down_votes: downVotes,
+    total_models: totalVotes,
+    summary: totalVotes > 0 ? `${upVotes}/${totalVotes} UP (${downVotes} DOWN)` : null,
+    agreement: totalVotes > 0 ? Number(((Math.max(upVotes, downVotes) / totalVotes) * 100).toFixed(0)) : null,
+  };
+}
+
+/** `only` narrows the enabled models for one call (e.g. the CL records ask Jev alone); omitted = every enabled model. */
+export async function callMultiModelDecisions(snapshotData: any, apiKey?: string, only?: readonly string[]) {
+  const settings = getSetting('jev.models');
+  const enabled = only ? (Object.fromEntries(Object.entries(settings).map(([m, on]) => [m, on && only.includes(m)])) as typeof settings) : settings;
   const off = Promise.resolve(null);
-  const [jevRes, kevRes, spanRes, solarRes, tevRes, mercuryRes] = await Promise.allSettled([
+  const [jevRes, kevRes, spanRes, solarRes, tevRes, mercuryRes, liquidRes] = await Promise.allSettled([
     enabled.jev ? callJevDecision(snapshotData, apiKey) : off,
     enabled.kev ? callKevDecision(snapshotData, apiKey) : off,
     enabled.span ? callSpanDecision(snapshotData, apiKey) : off,
     enabled.solar ? callSolarDecision(snapshotData, apiKey) : off,
     enabled.tev ? callTevDecision(snapshotData, apiKey) : off,
     enabled.mercury ? callMercuryDecision(snapshotData, apiKey) : off,
+    enabled.liquid ? callLiquidDecision(snapshotData, apiKey) : off,
   ]);
 
   const jev = jevRes.status === 'fulfilled' ? jevRes.value : null;
@@ -504,6 +536,10 @@ export async function callMultiModelDecisions(snapshotData: any, apiKey?: string
   if (mercuryRes.status === 'rejected') {
     console.error('[MultiModel] Mercury error:', mercuryRes.reason?.message || mercuryRes.reason);
   }
+  const liquid = liquidRes.status === 'fulfilled' ? liquidRes.value : null;
+  if (liquidRes.status === 'rejected') {
+    console.error('[MultiModel] Liquid error:', liquidRes.reason?.message || liquidRes.reason);
+  }
 
   if (jevRes.status === 'rejected') {
     console.error('[MultiModel] Jev error:', jevRes.reason?.message || jevRes.reason);
@@ -515,25 +551,7 @@ export async function callMultiModelDecisions(snapshotData: any, apiKey?: string
     console.error('[MultiModel] Span error:', spanRes.reason?.message || spanRes.reason);
   }
 
-  const votes = [jev?.direction, kev?.direction, span?.direction].filter(Boolean) as ('UP' | 'DOWN')[];
-  const upVotes = votes.filter(v => v === 'UP').length;
-  const downVotes = votes.filter(v => v === 'DOWN').length;
-  const totalVotes = votes.length;
-
-  let consensusDirection: 'UP' | 'DOWN' | 'SPLIT' | null = null;
-  if (upVotes > downVotes) consensusDirection = 'UP';
-  else if (downVotes > upVotes) consensusDirection = 'DOWN';
-  else if (totalVotes > 0) consensusDirection = 'SPLIT';
-
-  const consensus = {
-    direction: consensusDirection,
-    up_votes: upVotes,
-    down_votes: downVotes,
-    total_models: totalVotes,
-    summary: totalVotes > 0 ? `${upVotes}/${totalVotes} UP (${downVotes} DOWN)` : null,
-    agreement: totalVotes > 0 ? Number(((Math.max(upVotes, downVotes) / totalVotes) * 100).toFixed(0)) : null,
-  };
-
+  const consensus = consensusOf(jev, kev, span);
   const primary = jev || kev || span;
 
   return {
@@ -543,6 +561,7 @@ export async function callMultiModelDecisions(snapshotData: any, apiKey?: string
     solar,
     tev,
     mercury,
+    liquid,
     consensus,
     primary,
   };
@@ -597,6 +616,7 @@ export function saveHistoricalJevRecord(
       solar: predictionOrMulti.solar,
       tev: predictionOrMulti.tev,
       mercury: predictionOrMulti.mercury,
+      liquid: predictionOrMulti.liquid,
       consensus: predictionOrMulti.consensus,
     };
     primaryPrediction = predictionOrMulti.primary || predictionOrMulti.jev || primaryPrediction;
@@ -640,11 +660,11 @@ export function saveHistoricalJevRecord(
     } catch {}
   }
 
-  // DEBOUNCE GUARD: Check if a file was created for this specific coin within the last 4 minutes (240s)
+  // DEBOUNCE GUARD: skip if a file was created for this coin within 80% of the record interval (240s at the 300s default)
   const latest = getLatestHistoricalFile(coinKey);
   if (!force && latest) {
     const elapsedMs = Date.now() - latest.timestamp;
-    if (elapsedMs < 240000) { // 4 minutes
+    if (elapsedMs < getSetting('jev.recordIntervalSec') * 1000 * 0.8) {
       try {
         fs.writeFileSync(path.join(jevDir, `${coinKey}_updown.json`), jsonStr, 'utf8');
         if (coinKey === 'btc') {

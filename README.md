@@ -1,6 +1,6 @@
 # Polymarket Up/Down
 
-A lightweight, standalone app for Polymarket **Up/Down (hourly crypto) markets**: live signals, the Jev / Kev / Span decision-model collector (plus Solar, Tev and Mercury as extra, non-voting models), forward-test analysis, and the control panel for the workers and the trading bot.
+A lightweight, standalone app for Polymarket **Up/Down (hourly crypto) markets**: live signals, the Jev / Kev / Span decision-model collector (plus Solar, Tev, Mercury and Liquid D1 as extra, non-voting models), forward-test analysis, and the control panel for the workers and the trading bot.
 
 It was split out of *Polymarket Pulse*. It has **no wallet crawler, no wallet backfill and no whale/starred alerts**, and it keeps its own database (`updown.db`).
 
@@ -16,7 +16,7 @@ It was split out of *Polymarket Pulse*. It has **no wallet crawler, no wallet ba
 
 | Worker (`scripts/`) | Job |
 |---|---|
-| `jev.ts` | Snapshot every 30 s; every 5 min one record with Jev, Kev, Span, Solar, Tev and Mercury; resolves market outcomes |
+| `jev.ts` | Snapshot every 30 s; every 5 min one record with Jev, Kev, Span, Solar, Tev, Mercury and Liquid; resolves market outcomes |
 | `alerts.ts` | Records a per-minute Up/Down tick to `ticks/`, evaluates alert rules |
 | `bot.ts` | Trading bot: forward test of the frozen strategy, Telegram control, redemption (off by default) |
 | `supervisor.ts` | Starts and restarts the web app and the workers, serves the control API, sends heartbeat alerts |

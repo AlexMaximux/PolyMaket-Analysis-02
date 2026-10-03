@@ -16,6 +16,9 @@ import {
   DEFAULT_ANALYSIS_CONFIG,
   FROZEN_STRATEGY,
   FROZEN_STRATEGY_2,
+  FROZEN_STRATEGY_3,
+  FROZEN_STRATEGY_4,
+  FROZEN_STRATEGY_5,
   STRATEGY_HISTORY,
   LATE_MINUTE,
   MINUTE_BUCKETS,
@@ -37,8 +40,18 @@ import {
   type Verdict,
 } from "@/lib/signalAnalysis";
 import { LadderPanel } from "@/components/cloud-analysis/LadderPanel";
+import { DatasetSwitch } from "@/components/DatasetSwitch";
+import { FieldFilterPanel } from "@/components/FieldFilterPanel";
+import { withHistorySet } from "@/lib/historyDataset";
+import { countReadyConditions, describeFilters, sanitizeFilterGroups } from "@/lib/fieldFilters";
+import { tradeFilterFields } from "@/lib/snapshotFilterFields";
 
 const STORAGE_KEY = "cloud_analysis_config_v1";
+// Offered first in the field filter panel: the trade's own values, time, and the most used snapshot fields
+const QUICK_FILTER_FIELDS = [
+  "minute", "hour", "trade_dir", "trade_price", "trade_conf", "trade_score", "trade_agree",
+  "score", "score_confidence", "kev_score", "fair_claude", "claude_edge", "spot_vs_ptb",
+];
 
 const C = {
   text: "#e8e8e4",
@@ -62,8 +75,8 @@ const signColor = (x: number | null | undefined) => (x == null ? C.text2 : x > 0
 type ScenarioDef = { id: string; name: string; hint: string; over: Partial<AnalysisConfig> };
 // Scenarios keep the current data scope (coins/dates/hours) and money settings; they change only signal logic.
 const SIGNAL_KEYS: (keyof AnalysisConfig)[] = [
-  "model", "confidenceType", "bullishScore", "bearishScore", "bullishMinConf", "bearishMinConf", "directions",
-  "consensus", "solarAgrees", "solarMinConf", "minMinute", "maxMinute", "minEntry", "maxEntry", "dedupe", "pickOrder",
+  "model", "confidenceType", "bullishScore", "bearishScore", "bullishMinConf", "bearishMinConf", "bullishMaxConf", "bearishMaxConf", "directions",
+  "consensus", "solarAgrees", "solarMinConf", "noPriorOpposite", "minMinute", "maxMinute", "minEntry", "maxEntry", "dedupe", "pickOrder",
 ];
 const SCENARIOS: ScenarioDef[] = [
   { id: "raw", name: "Every signal snapshot", hint: "Each 5-min snapshot counted as its own trade (inflated).", over: { dedupe: "all" } },
@@ -72,6 +85,7 @@ const SCENARIOS: ScenarioDef[] = [
   { id: "c33", name: "3/3 consensus, first per hour", hint: "First signal where Jev, Kev and Span all agree.", over: { consensus: "3of3", dedupe: "firstPerHour" } },
   { id: "c33solar", name: "3/3 + Solar agrees", hint: "3/3 consensus plus Solar-Decide pointing the same way. Only rows recorded after Solar was added or backfilled can pass.", over: { consensus: "3of3", solarAgrees: true, dedupe: "firstPerHour" } },
   { id: "c33solarconf", name: "3/3 + Solar confidence ≥ 80%", hint: "3/3 consensus, and Solar's score confidence at least 80%. Threshold picked after looking at the data, so treat it as a hypothesis for a forward test.", over: { consensus: "3of3", solarMinConf: 80, dedupe: "firstPerHour" } },
+  { id: "c33noflip", name: "3/3 + skip hours that already flipped", hint: "3/3 consensus, and no trade in an hour where a signal already pointed the other way. Picked after looking at the data, so treat it as a hypothesis for a forward test.", over: { consensus: "3of3", noPriorOpposite: true, dedupe: "firstPerHour" } },
   { id: "c33late", name: `3/3 + no late signals (min ≤ ${LATE_MINUTE - 1})`, hint: "Drops signals in the last 10 minutes.", over: { consensus: "3of3", dedupe: "firstPerHour", maxMinute: LATE_MINUTE - 1 } },
   { id: "c33price", name: "3/3 + price ≤ 90¢", hint: "Skips near-certain, low-payout entries.", over: { consensus: "3of3", dedupe: "firstPerHour", maxEntry: 90 } },
   { id: "c33first", name: "3/3 must be the hour's first signal", hint: "If the first signal is not 3/3, skip the hour.", over: { consensus: "3of3", dedupe: "firstPerHour", pickOrder: "beforeFilters" } },
@@ -587,7 +601,7 @@ function FrozenCard({ strategy, title, before, after, afterTrades, history, stak
 
 // ---------- page ----------
 async function getRows(refresh: boolean): Promise<SnapshotRow[]> {
-  const res = await fetch(`/api/jev/history${refresh ? "?refresh=true" : ""}`, { cache: "no-store" });
+  const res = await fetch(withHistorySet(`/api/jev/history${refresh ? "?refresh=true" : ""}`), { cache: "no-store" });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return (json.files || []).filter((r: SnapshotRow) => r && r.et_time);
@@ -627,7 +641,10 @@ export default function CloudAnalysisPage() {
     Promise.resolve().then(() => {
       try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) setCfg({ ...DEFAULT_ANALYSIS_CONFIG, ...JSON.parse(saved) });
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setCfg({ ...DEFAULT_ANALYSIS_CONFIG, ...parsed, fieldFilters: sanitizeFilterGroups(parsed.fieldFilters) });
+        }
       } catch {}
       setLoaded(true);
     });
@@ -648,8 +665,20 @@ export default function CloudAnalysisPage() {
     [rows],
   );
 
+  // Field filters: the fields on offer (coins from the data) and what is applied
+  const filterFields = useMemo(() => tradeFilterFields(allCoins), [allCoins]);
+  const filterFieldMap = useMemo(() => new Map(filterFields.map((f) => [f.id, f])), [filterFields]);
+  const activeFieldFilters = countReadyConditions(cfg.fieldFilters, filterFieldMap);
+  const fieldFilterSummary = useMemo(() => describeFilters(cfg.fieldFilters, filterFieldMap), [cfg.fieldFilters, filterFieldMap]);
+  const filterPanelRef = useRef<HTMLDivElement | null>(null);
+
   const baseRows = useMemo(() => filterBaseRows(rows, cfg), [rows, cfg]);
   const trades = useMemo(() => buildTrades(baseRows, cfg), [baseRows, cfg]);
+  // The same settings without the field filters, to show how much they change the trade count
+  const tradesWithoutFieldFilters = useMemo(
+    () => (activeFieldFilters ? buildTrades(baseRows, { ...cfg, fieldFilters: [] }).length : trades.length),
+    [baseRows, cfg, activeFieldFilters, trades],
+  );
   const metrics = useMemo(() => computeMetrics(trades, cfg.stake), [trades, cfg.stake]);
   const verdict = verdictOf(metrics);
 
@@ -671,6 +700,9 @@ export default function CloudAnalysisPage() {
   };
   const frozen = useMemo(() => forwardOf(FROZEN_STRATEGY), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
   const frozen2 = useMemo(() => forwardOf(FROZEN_STRATEGY_2), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen3 = useMemo(() => forwardOf(FROZEN_STRATEGY_3), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen4 = useMemo(() => forwardOf(FROZEN_STRATEGY_4), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen5 = useMemo(() => forwardOf(FROZEN_STRATEGY_5), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Each closed/current rule in STRATEGY_HISTORY, scored only on its own forward window
   // [frozenAt, frozenUntil). A superseded rule's window is frozen in time, so its result never
@@ -695,7 +727,7 @@ export default function CloudAnalysisPage() {
       const c = withScenario(cfg, s.over);
       return { key: s.id, label: s.name, hint: s.hint, metrics: computeMetrics(buildTrades(baseRows, c), c.stake) };
     });
-    out.push({ key: "current", label: "Your current settings", hint: "Everything set in the left panel.", metrics });
+    out.push({ key: "current", label: "Your current settings", hint: "Everything set in the left panel and the field filters.", metrics });
     return out;
   }, [baseRows, cfg, metrics]);
 
@@ -767,8 +799,11 @@ export default function CloudAnalysisPage() {
     if (metrics.pending) out.push({ level: "info", text: `${metrics.pending} pending trade(s) are excluded from win rate and P&L until Polymarket resolves them.` });
     out.push({ level: "info", text: `Prices come from the 1h card at snapshot time (mid/last, not the order-book ask). Set “Slippage” to 1–2¢ to model the real fill.` });
     out.push({ level: "info", text: "Tuning thresholds on the same days you judge them on overfits. Pick settings on older days, then check the newest day in the walk-forward test." });
+    if (fieldFilterSummary) {
+      out.push({ level: "warn", text: `Field filters on: ${fieldFilterSummary}. A filter chosen after looking at these trades fits this data; check it in the walk-forward test before trusting it.` });
+    }
     return out;
-  }, [trades, baseRows, metrics]);
+  }, [trades, baseRows, metrics, fieldFilterSummary]);
 
   const exportCsv = () => {
     const header = ["et_time", "coin", "market", "minute", "direction", "model_score", "model_conf", "agree", "quote", "entry", "outcome", "status", "pnl", "file"];
@@ -811,6 +846,7 @@ export default function CloudAnalysisPage() {
             Honest backtest of Jev / Kev / Span signals: real entry prices, break-even, confidence ranges.
             {rows.length > 0 && <span className="text-[#73757c]"> · {rows.length} snapshots · {baseRows.length} in scope</span>}
           </p>
+          <div className="mt-2"><DatasetSwitch path="/cloud-analysis" /></div>
         </div>
         <div className="flex gap-2">
           <button onClick={() => load(true)} disabled={loading} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] border border-white/[0.12] text-[#e8e8e4] hover:bg-white/[0.06] disabled:opacity-50">
@@ -870,6 +906,7 @@ export default function CloudAnalysisPage() {
                 { value: "solar", label: "Solar" },
                 { value: "tev", label: "Tev" },
                 { value: "mercury", label: "Mercury" },
+                { value: "liquid", label: "Liquid" },
                 { value: "avg", label: "Avg of 3", title: "Average of the three scores; confidence = agreement %" },
               ]}
             />
@@ -886,6 +923,8 @@ export default function CloudAnalysisPage() {
             <Field label="DOWN if score <"><NumberInput value={cfg.bearishScore} step={0.05} onChange={(v) => set("bearishScore", v)} /></Field>
             <Field label="UP min conf %"><NumberInput value={cfg.bullishMinConf} min={0} max={100} onChange={(v) => set("bullishMinConf", v)} /></Field>
             <Field label="DOWN min conf %"><NumberInput value={cfg.bearishMinConf} min={0} max={100} onChange={(v) => set("bearishMinConf", v)} /></Field>
+            <Field label="UP max conf %"><NumberInput value={cfg.bullishMaxConf} min={0} max={100} onChange={(v) => set("bullishMaxConf", v)} /></Field>
+            <Field label="DOWN max conf %"><NumberInput value={cfg.bearishMaxConf} min={0} max={100} onChange={(v) => set("bearishMaxConf", v)} /></Field>
           </div>
           <Field label="Directions">
             <Segmented
@@ -914,6 +953,13 @@ export default function CloudAnalysisPage() {
           <Field label="Solar min confidence %" hint="0 = off. Rows without a Solar prediction are excluded when above 0.">
             <NumberInput value={cfg.solarMinConf} min={0} max={100} onChange={(v) => set("solarMinConf", v)} />
           </Field>
+          <Field label="Flipped hours" hint="Skip the hour if a signal pointing the other way (any confidence) already appeared in it">
+            <Segmented
+              value={cfg.noPriorOpposite ? "skip" : "keep"}
+              onChange={(v) => set("noPriorOpposite", v === "skip")}
+              options={[{ value: "keep", label: "Keep" }, { value: "skip", label: "Skip" }]}
+            />
+          </Field>
           <Field label="Signal minute (of the hour)" hint="Late signals come when the result is almost settled">
             <div className="grid grid-cols-2 gap-2">
               <NumberInput value={cfg.minMinute} min={0} max={59} onChange={(v) => set("minMinute", v)} />
@@ -925,6 +971,19 @@ export default function CloudAnalysisPage() {
               <NumberInput value={cfg.minEntry} min={0} max={100} onChange={(v) => set("minEntry", v)} />
               <NumberInput value={cfg.maxEntry} min={0} max={100} onChange={(v) => set("maxEntry", v)} />
             </div>
+          </Field>
+          <Field label="Field filters" hint="Ranges and conditions on any field: Claude fair value, any model's score or confidence, minute, price… Edited in the panel on the right.">
+            <button
+              type="button"
+              onClick={() => filterPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className={`w-full px-2 py-1.5 rounded-lg text-[12px] border text-left transition-colors ${
+                activeFieldFilters
+                  ? "bg-[#d97757]/15 border-[#d97757]/40 text-[#d97757]"
+                  : "border-white/[0.12] text-[#9a9ca3] hover:text-white hover:bg-white/[0.06]"
+              }`}
+            >
+              {activeFieldFilters ? `${activeFieldFilters} active · edit →` : "Add field filters →"}
+            </button>
           </Field>
 
           <div className="h-px bg-white/[0.06]" />
@@ -986,8 +1045,57 @@ export default function CloudAnalysisPage() {
                 budget={budget}
                 onBudget={setBudget}
               />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_3}
+                title="Frozen strategy 3: forward test (skip flipped hours)"
+                before={frozen3.before}
+                after={frozen3.after}
+                afterTrades={frozen3.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_4}
+                title="Frozen strategy 4: forward test (Jev alone, first signal at minute 45+)"
+                before={frozen4.before}
+                after={frozen4.after}
+                afterTrades={frozen4.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_5}
+                title="Frozen strategy 1 + Optimised: forward test (optimizer thresholds, minute 30–55)"
+                before={frozen5.before}
+                after={frozen5.after}
+                afterTrades={frozen5.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
 
-              <div className="pt-2 text-[12px] font-medium text-[#73757c]">Explore: results below follow your left-panel settings</div>
+              <div className="pt-2 text-[12px] font-medium text-[#73757c]">Explore: results below follow your left-panel settings and field filters</div>
+              <FieldFilterPanel
+                fields={filterFields}
+                groups={cfg.fieldFilters}
+                onChange={(g) => set("fieldFilters", g)}
+                quickFieldIds={QUICK_FILTER_FIELDS}
+                countText={
+                  activeFieldFilters
+                    ? `${trades.length} trades (${tradesWithoutFieldFilters} without field filters)`
+                    : `${trades.length} trades, no field filter`
+                }
+                hint="Tested on each signal together with the left-panel filters, so “Pick first… before filters” makes the hour's first signal pass them too. The frozen strategies above are not affected."
+                anchorRef={filterPanelRef}
+              />
               <Card>
                 <div className="flex items-start gap-3">
                   <div className="mt-0.5" style={{ color: VERDICT_TEXT[verdict].color }}>
@@ -1023,7 +1131,7 @@ export default function CloudAnalysisPage() {
                 </ul>
               </Card>
 
-              <Card title="Scenario comparison" subtitle="Same data scope and stake, different counting rules. Click a row to load it.">
+              <Card title="Scenario comparison" subtitle="Same data scope, field filters and stake, different counting rules. Click a row to load it.">
                 <MetricsTable
                   rows={scenarioRows}
                   highlight={activeScenario ?? "current"}
@@ -1152,7 +1260,7 @@ export default function CloudAnalysisPage() {
                       {shownTrades.map((t) => (
                         <tr key={t.row.filename} className="hover:bg-white/[0.04]">
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-[#e8e8e4] whitespace-nowrap">
-                            <a href={`/api/jev/history?file=${encodeURIComponent(t.row.filename)}`} target="_blank" rel="noreferrer" className="hover:underline">
+                            <a href={withHistorySet(`/api/jev/history?file=${encodeURIComponent(t.row.filename)}`)} target="_blank" rel="noreferrer" className="hover:underline">
                               {t.row.et_time.replace(" ET", "")}
                             </a>
                           </td>

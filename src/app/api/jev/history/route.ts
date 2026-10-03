@@ -14,7 +14,10 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const requestedFile = searchParams.get('file');
 
-    const historyDir = path.join(process.cwd(), 'jev', 'history');
+    // set=cl reads the CL dataset (jev/cl): the same snapshots re-asked with the Claude fair value added.
+    // Without it nothing changes: only jev/history is read.
+    const isCl = searchParams.get('set') === 'cl';
+    const historyDir = path.join(process.cwd(), 'jev', isCl ? 'cl' : 'history');
     if (!fs.existsSync(historyDir)) {
       return NextResponse.json({ files: [], count: 0 });
     }
@@ -50,7 +53,8 @@ export async function GET(req: Request) {
 
     let fileNames = fs.readdirSync(historyDir).filter(f => f.endsWith('.json'));
     if (coinFilter && coinFilter !== 'all') {
-      fileNames = fileNames.filter(f => f.toLowerCase().startsWith(coinFilter + '_'));
+      const prefix = (isCl ? 'cl-' : '') + coinFilter + '_';
+      fileNames = fileNames.filter(f => f.toLowerCase().startsWith(prefix));
     }
     // Sort descending by time
     fileNames.sort().reverse();
@@ -65,11 +69,15 @@ export async function GET(req: Request) {
 
     const files = fileNames.map(f => {
       try {
-        let content = jsonFileCache.get(f);
+        // CL files are filled in after they are written (when the models answer), so their cache key
+        // includes the modification time; the originals never change and keep the plain name.
+        const cacheKey = isCl ? `cl:${f}:${fs.statSync(path.join(historyDir, f)).mtimeMs}` : f;
+        let content = jsonFileCache.get(cacheKey);
         if (!content) {
           content = JSON.parse(fs.readFileSync(path.join(historyDir, f), 'utf8'));
-          jsonFileCache.set(f, content);
+          jsonFileCache.set(cacheKey, content);
         }
+        if (isCl && content.predictions == null) return null; // not asked yet: nothing to analyse
         const preds = content.predictions || {};
         const p = preds.jev || content.prediction || {};
         const pKev = preds.kev || null;
@@ -77,6 +85,7 @@ export async function GET(req: Request) {
         const pSolar = preds.solar || null;
         const pTev = preds.tev || null;
         const pMercury = preds.mercury || null;
+        const pLiquid = preds.liquid || null;
         const pct = (x: unknown) => (x != null ? Number((Number(x) * 100).toFixed(0)) : null);
         const consensus = preds.consensus || null;
         const cards = content.cards || {};
@@ -170,6 +179,15 @@ export async function GET(req: Request) {
           mercury_confidence: pct(pMercury?.score_confidence ?? pMercury?.direction_confidence),
           mercury_prob_up: pMercury?.prob_up ?? null,
 
+          // Liquid D1 prediction (extra, not part of the consensus)
+          liquid_direction: pLiquid?.direction ?? null,
+          liquid_score: pLiquid?.score != null ? Number(pLiquid.score) : null,
+          liquid_score_label: pLiquid?.score_interpretation ?? null,
+          liquid_score_confidence: pct(pLiquid?.score_confidence ?? pLiquid?.raw_decision?.answers?.one_hour_score?.confidence),
+          liquid_direction_confidence: pct(pLiquid?.direction_confidence ?? pLiquid?.raw_decision?.answers?.one_hour_direction?.confidence),
+          liquid_confidence: pct(pLiquid?.score_confidence ?? pLiquid?.direction_confidence),
+          liquid_prob_up: pLiquid?.prob_up ?? null,
+
           // Consensus
           consensus_direction: consensus?.direction ?? null,
           consensus_summary: consensus?.summary ?? null,
@@ -189,6 +207,7 @@ export async function GET(req: Request) {
           fair_5m: fv.model_5m != null ? Number((fv.model_5m * 100).toFixed(2)) : null,
           fair_base: fv.base_no_drift != null ? Number((fv.base_no_drift * 100).toFixed(2)) : null,
           fair_joint: fv.joint_solve != null ? Number((fv.joint_solve * 100).toFixed(2)) : null,
+          fair_claude: fv.claude != null ? Number((fv.claude * 100).toFixed(2)) : null,
           spot_price: content.spot_price != null ? Number(content.spot_price) : null,
           open_price: content.open_price != null ? Number(content.open_price) : null,
           price_to_beat: content.price_to_beat != null ? Number(content.price_to_beat) : (content.open_price != null ? Number(content.open_price) : null),

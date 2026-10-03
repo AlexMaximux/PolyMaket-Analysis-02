@@ -47,7 +47,7 @@ describe('settings', () => {
     expect(applySettingChanges({ 'alerts.intervalSec': 30 }, db).ok).toBe(true);
     expect(applySettingChanges({ 'jev.coins': [] }, db).ok).toBe(false);
     expect(applySettingChanges({ 'jev.coins': ['btc', 'zzz'] }, db).ok).toBe(false);
-    expect(applySettingChanges({ 'jev.models': { jev: false, kev: false, span: false, solar: false, tev: false, mercury: false } }, db).ok).toBe(false);
+    expect(applySettingChanges({ 'jev.models': { jev: false, kev: false, span: false, solar: false, tev: false, mercury: false, liquid: false } }, db).ok).toBe(false);
     expect(applySettingChanges({ 'jev.telegramToken': 'nope' }, db).ok).toBe(false);
     expect(applySettingChanges({ 'nope.key': 1 }, db).ok).toBe(false);
   });
