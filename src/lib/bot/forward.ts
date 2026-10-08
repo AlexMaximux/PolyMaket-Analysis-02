@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getDb } from '../db';
 import { getSetting } from '../settings';
-import { FROZEN_STRATEGY, buildTrades, filterBaseRows, type SnapshotRow } from '../signalAnalysis';
+import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from '../signalAnalysis';
 import { forwardSnapshotRow } from '../forwardSnapshot';
 import { buildHourlyEtSlug, executeSignal, reconcileRequest } from './executor';
 import { findRequest, pendingRequests } from './ledger';
@@ -12,16 +12,21 @@ import { getBotSetting, setBotSetting } from './db';
 import type { SignalRequest, TradeResult } from './types';
 
 export const FORWARD_MAX_AGE_MS = 120_000;
-export function selectForwardSignal(rows: SnapshotRow[], now: number, armedAt: number, slug: string): SignalRequest | null {
-  const rule = FROZEN_STRATEGY.rule;
+// The strategies setting bot.forwardStrategy can pick. Each may use only the fields forwardSnapshotRow fills in.
+export const BOT_STRATEGIES: FrozenStrategy[] = [FROZEN_STRATEGY, FROZEN_STRATEGY_5];
+export function botStrategy(): FrozenStrategy | null {
+  return BOT_STRATEGIES.find(s => s.id === getSetting('bot.forwardStrategy')) ?? null;
+}
+export function selectForwardSignal(rows: SnapshotRow[], now: number, armedAt: number, slug: string, strategy: FrozenStrategy): SignalRequest | null {
+  const rule = strategy.rule;
   // Deduplicate BEFORE freshness/activation filtering: never substitute a later signal in the same hour.
-  const trades = buildTrades(filterBaseRows(rows.filter(r => Date.parse(r.timestamp || '') >= Date.parse(FROZEN_STRATEGY.frozenAt)), rule), rule);
+  const trades = buildTrades(filterBaseRows(rows.filter(r => Date.parse(r.timestamp || '') >= Date.parse(strategy.frozenAt)), rule), rule);
   const t = trades.find(t => t.row.market_slug === slug);
   if (!t || t.time <= armedAt || t.time > now || now - t.time > FORWARD_MAX_AGE_MS) return null;
   return {
     symbol: 'BTC', timeframe: '1H', outcome: t.dir, source: 'signal', expectedMarketSlug: slug,
     forwardArmedAt: armedAt, expiresAt: t.time + FORWARD_MAX_AGE_MS,
-    requestId: `forward:${createHash('sha256').update(`${FROZEN_STRATEGY.id}:${slug}`).digest('hex')}`,
+    requestId: `forward:${createHash('sha256').update(`${strategy.id}:${slug}`).digest('hex')}`,
   };
 }
 function readRows(now: number): SnapshotRow[] {
@@ -38,14 +43,25 @@ function readRows(now: number): SnapshotRow[] {
 }
 export async function runForwardCycle(rows?: SnapshotRow[], execute: (signal: SignalRequest) => Promise<TradeResult> = executeSignal) {
   if (!getSetting('bot.forwardEnabled') || !getSetting('bot.enabled')) return;
+  const strategy = botStrategy();
+  if (!strategy) throw new Error(`Unknown forward strategy ${getSetting('bot.forwardStrategy')}`);
   getDb().exec('CREATE TABLE IF NOT EXISTS bot_forward_gate (id INTEGER PRIMARY KEY, armed_at INTEGER NOT NULL)');
   getDb().prepare('INSERT OR IGNORE INTO bot_forward_gate VALUES(1,?)').run(Date.now());
+  // A strategy other than the one last scanned (a new setting, or a new default after an update) re-arms the
+  // bridge, as switching it on does: only signals after this moment trade.
+  if (getBotSetting('forward.strategy', '') !== strategy.id) {
+    getDb().prepare('UPDATE bot_forward_gate SET armed_at=? WHERE id=1').run(Date.now());
+    setBotSetting('forward.strategy', strategy.id);
+  }
   const gate = getDb().prepare('SELECT armed_at FROM bot_forward_gate WHERE id=1').get() as { armed_at: number };
-  const signal = selectForwardSignal(rows ?? readRows(Date.now()), Date.now(), gate.armed_at, buildHourlyEtSlug('btc'));
+  const signal = selectForwardSignal(rows ?? readRows(Date.now()), Date.now(), gate.armed_at, buildHourlyEtSlug('btc'), strategy);
   setBotSetting('forward.lastScan', String(Date.now()));
   if (!signal || findRequest(signal.requestId!)) return;
   // Persist the event BEFORE executing. A crash here skips an order rather than placing it late.
   getDb().exec('CREATE TABLE IF NOT EXISTS bot_forward_events (id TEXT PRIMARY KEY, signal TEXT NOT NULL, created_at INTEGER NOT NULL)');
+  // One forward trade per market hour, whichever strategy claimed it: a switch mid-hour must not buy the hour twice.
+  const hourClaimed = getDb().prepare("SELECT 1 FROM bot_forward_events WHERE json_extract(signal, '$.expectedMarketSlug') = ? LIMIT 1").get(signal.expectedMarketSlug);
+  if (hourClaimed) return;
   const inserted = getDb().prepare('INSERT OR IGNORE INTO bot_forward_events VALUES(?,?,?)').run(signal.requestId, JSON.stringify(signal), Date.now());
   if (!inserted.changes) return;
   console.log(`[FORWARD] Signal received: BTC 1H ${signal.outcome} · ${signal.expectedMarketSlug} · ${signal.requestId}`);
@@ -55,7 +71,8 @@ export async function runForwardCycle(rows?: SnapshotRow[], execute: (signal: Si
   if (!result.success && !findRequest(signal.requestId!)) enqueueNotification(`blocked:${signal.requestId}`, `⛔ سیگنال forward اجرا نشد؛ وضعیت بات و بودجه را بررسی کنید.\n${signal.expectedMarketSlug}\n${signal.requestId}`);
 }
 export function forwardStatus() {
-  return { enabled: getSetting('bot.forwardEnabled'), strategy: FROZEN_STRATEGY.id, lastScan: Number(getBotSetting('forward.lastScan', '0')) || null, lastError: getBotSetting('forward.lastError', '') || null };
+  const strategy = botStrategy();
+  return { enabled: getSetting('bot.forwardEnabled'), strategy: strategy?.id ?? getSetting('bot.forwardStrategy'), strategyName: strategy?.name ?? 'unknown strategy', lastScan: Number(getBotSetting('forward.lastScan', '0')) || null, lastError: getBotSetting('forward.lastError', '') || null };
 }
 export async function startForwardWorker() {
   while (true) {

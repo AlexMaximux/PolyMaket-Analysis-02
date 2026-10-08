@@ -56,7 +56,7 @@ export interface TradeResult {
 }
 
 export interface BotStatus {
-  forward?: { enabled: boolean; strategy: string; lastScan: number | null; lastError: string | null };
+  forward?: { enabled: boolean; strategy: string; strategyName: string; lastScan: number | null; lastError: string | null };
   notifications?: { pending: number; failed: number };
   redemption: ReturnType<typeof getRedemptionStatus>;
   enabled: boolean;

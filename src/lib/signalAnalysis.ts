@@ -225,8 +225,9 @@ export const FROZEN_STRATEGY_4: FrozenStrategy = {
 };
 
 // A fifth parallel forward test, set by the user on 2026-10-03: strategy 1 (v2) with the thresholds a parameter search
-// picked on the same data. It beat v2 in-sample but not in the walk-forward check, so it is a paper test alongside v2,
-// never a replacement: only the forward window counts. Frozen on the hour, after the search, so no forward row was seen.
+// picked on the same data. It beat v2 in-sample but not in the walk-forward check; only the forward window counts.
+// Frozen on the hour, after the search, so no forward row was seen. Since 2026-10-08 the bot trades it by default
+// (setting bot.forwardStrategy); v2 keeps its own forward test.
 export const FROZEN_STRATEGY_5: FrozenStrategy = {
   id: "s5",
   name: "BTC · Jev + Kev + Span all agree · UP score > 3.25 at 90–100% / DOWN score < 0.75 at 0–98% · minute 30–55",

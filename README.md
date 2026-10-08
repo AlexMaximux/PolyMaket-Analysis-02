@@ -10,7 +10,7 @@ It was split out of *Polymarket Pulse*. It has **no wallet crawler, no wallet ba
 |---|---|
 | `/updown` | Live Up/Down board: prices, fair values, order books |
 | `/jev-analysis` | Every recorded multi-model snapshot, signals, charts, exports |
-| `/cloud-analysis` | Honest backtest and the two frozen forward tests (Strategy 1 and Strategy 2, Solar ≥ 80%) |
+| `/cloud-analysis` | Honest backtest and the frozen forward tests (strategies 1–4 and Strategy 1 + Optimised, which the bot trades by default) |
 | `/alerts` | Telegram rules for Jev and Up/Down signals |
 | `/control` | Workers, logs, settings, heartbeat alerts, trading-bot status |
 
@@ -18,7 +18,7 @@ It was split out of *Polymarket Pulse*. It has **no wallet crawler, no wallet ba
 |---|---|
 | `jev.ts` | Snapshot every 30 s; every 5 min one record with Jev, Kev, Span, Solar, Tev, Mercury and Liquid; resolves market outcomes |
 | `alerts.ts` | Records a per-minute Up/Down tick to `ticks/`, evaluates alert rules |
-| `bot.ts` | Trading bot: forward test of the frozen strategy, Telegram control, redemption (off by default) |
+| `bot.ts` | Trading bot: forward test of the frozen strategy chosen in the control panel (Frozen strategy 1 + Optimised by default), Telegram control, redemption (off by default) |
 | `supervisor.ts` | Starts and restarts the web app and the workers, serves the control API, sends heartbeat alerts |
 
 ## Run

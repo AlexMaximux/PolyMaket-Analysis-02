@@ -9,7 +9,9 @@ import { enqueueNotification, deliverNotifications, notificationStatus, collectN
 import { runOutcomeCycle } from '../src/lib/bot/outcomes';
 import { initRedemptions } from '../src/lib/bot/redeemDb';
 import { walletIdentity } from '../src/lib/bot/live';
-import type { SnapshotRow } from '../src/lib/signalAnalysis';
+import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, type SnapshotRow } from '../src/lib/signalAnalysis';
+import { BOT_STRATEGIES, botStrategy } from '../src/lib/bot/forward';
+import { setBotSetting } from '../src/lib/bot/db';
 import type { TradeResult } from '../src/lib/bot/types';
 import type { RedemptionChain } from '../src/lib/bot/redeemChain';
 const NOW = Date.parse('2026-09-28T18:40:00Z');
@@ -24,7 +26,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); db.close(); });
 describe('forward bridge', () => {
-  const select = (rows: SnapshotRow[], armed = NOW - 120_000) => selectForwardSignal(rows, NOW, armed, buildHourlyEtSlug('btc'));
+  const select = (rows: SnapshotRow[], armed = NOW - 120_000) => selectForwardSignal(rows, NOW, armed, buildHourlyEtSlug('btc'), FROZEN_STRATEGY);
   it('uses the frozen rule and a stable ID, independent of result labels', () => {
     const a = select([row()]); expect(a).toMatchObject({ outcome: 'UP', expectedMarketSlug: buildHourlyEtSlug('btc') });
     expect(select([row(39, { market_outcome: 'DOWN' })])).toEqual(a);
@@ -43,7 +45,8 @@ describe('forward bridge', () => {
     expect(forwardSnapshotRow('btc_x.json', { predictions: { jev: { score: 4, raw_decision: { answers: { one_hour_score: { confidence: .954 } } } }, kev: { direction: 'UP' }, span: { direction: 'UP' } }, cards: { '1h': { up: .5014, slug: 'test' } } })).toMatchObject({ score_confidence: 95, up_1h_num: 50.1, market_slug: 'test', coin: 'BTC' });
   });
   it('claims each event once across cycles and rearms on live-mode changes', async () => {
-    applySettingChanges({ 'bot.enabled': true, 'bot.forwardEnabled': true });
+    applySettingChanges({ 'bot.enabled': true, 'bot.forwardEnabled': true, 'bot.forwardStrategy': 'v2' });
+    setBotSetting('forward.strategy', 'v2');
     db.prepare('UPDATE bot_forward_gate SET armed_at=?').run(NOW - 120_000);
     const execute = vi.fn().mockResolvedValue({ success: false } as TradeResult);
     await runForwardCycle([row()], execute); await runForwardCycle([row()], execute);
@@ -55,6 +58,56 @@ describe('forward bridge', () => {
     const execute = vi.fn(); await runForwardCycle([row()], execute); expect(execute).not.toHaveBeenCalled();
   });
 });
+describe('forward strategy choice', () => {
+  // Oct 5, after the s5 freeze: 14:xx ET = 18:xx UTC
+  const T = (m: number, s = 0) => Date.parse(`2026-10-05T18:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}Z`);
+  const at = (t: number) => vi.mocked(Date.now).mockReturnValue(t);
+  function row5(minute: number, extra: Partial<SnapshotRow> = {}): SnapshotRow {
+    const mm = String(minute).padStart(2, '0');
+    return { filename: `btc_5_${mm}.json`, coin: 'BTC', timestamp: `2026-10-05T18:${mm}:00Z`, et_time: `2026-10-05 14:${mm}:00 ET`, market_slug: buildHourlyEtSlug('btc'), score: 4, score_confidence: 95, direction: 'UP', kev_direction: 'UP', span_direction: 'UP', up_1h_num: 50, ...extra };
+  }
+  const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN' } as const;
+
+  it('defaults to Frozen strategy 1 + Optimised and accepts only the strategies the bot can trade', () => {
+    expect(botStrategy()).toBe(FROZEN_STRATEGY_5);
+    expect(BOT_STRATEGIES.map(s => s.id)).toEqual(['v2', 's5']);
+    expect(applySettingChanges({ 'bot.forwardStrategy': 'v2' }).ok).toBe(true);
+    expect(botStrategy()).toBe(FROZEN_STRATEGY);
+    expect(applySettingChanges({ 'bot.forwardStrategy': 's3' }).ok).toBe(false);
+  });
+  it('s5 trades its own rule: minute 30-31 and a low-confidence DOWN that v2 skips', () => {
+    at(T(31, 30));
+    const slug = buildHourlyEtSlug('btc');
+    const sel = (rows: SnapshotRow[], s = FROZEN_STRATEGY_5) => selectForwardSignal(rows, T(31, 30), T(20), slug, s);
+    expect(sel([row5(31)])?.outcome).toBe('UP');
+    expect(sel([row5(31)], FROZEN_STRATEGY)).toBeNull();
+    expect(sel([row5(31, { ...down, score: 0.7, score_confidence: 40 })])?.outcome).toBe('DOWN');
+    expect(sel([row5(31, { ...down, score_confidence: 99 })])).toBeNull();
+  });
+  it('re-arms when the strategy changes, and never buys an hour a second time after a switch', async () => {
+    const execute = vi.fn().mockResolvedValue({ success: false } as TradeResult);
+    at(T(33, 30));
+    applySettingChanges({ 'bot.enabled': true, 'bot.forwardEnabled': true, 'bot.forwardStrategy': 'v2' });
+    setBotSetting('forward.strategy', 'v2');
+    db.prepare('UPDATE bot_forward_gate SET armed_at=?').run(T(20));
+    // v2 buys the hour on a 99% DOWN signal (s5 caps DOWN confidence at 98%)
+    const rows = [row5(33, { ...down, score_confidence: 99 })];
+    await runForwardCycle(rows, execute);
+    expect(execute).toHaveBeenCalledTimes(1);
+    // Switch to s5: the next cycle re-arms and trades nothing
+    at(T(46));
+    applySettingChanges({ 'bot.forwardStrategy': 's5' });
+    at(T(47));
+    await runForwardCycle(rows, execute);
+    expect(db.prepare('SELECT armed_at FROM bot_forward_gate').get()).toEqual({ armed_at: T(47) });
+    // s5's first signal of the hour comes later and is fresh, but the hour was already bought under v2
+    rows.push(row5(48, { ...down, score_confidence: 95 }));
+    at(T(48, 30));
+    await runForwardCycle(rows, execute);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('durable Telegram reports', () => {
   function telegram() { applySettingChanges({ 'bot.telegramToken': '123456789:abcdefghijklmnopqrstuvwxyz123456789', 'bot.telegramChatId': '12345' }); }
   it('deduplicates reports, verifies Telegram acceptance, and retries after failure', async () => {

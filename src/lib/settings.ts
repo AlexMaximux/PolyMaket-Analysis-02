@@ -16,6 +16,9 @@ export type WorkerName = 'alerts' | 'jev' | 'bot';
 export const WORKER_NAMES: WorkerName[] = ['alerts', 'jev', 'bot'];
 
 export type BotWalletType = 'EOA' | 'POLY_PROXY' | 'POLY_GNOSIS_SAFE' | 'DEPOSIT_WALLET';
+// Frozen strategies the forward bridge can trade (BOT_STRATEGIES in lib/bot/forward): v2 = Frozen strategy 1,
+// s5 = Frozen strategy 1 + Optimised.
+export type BotForwardStrategy = 'v2' | 's5';
 const WALLET_TYPES: BotWalletType[] = ['EOA', 'POLY_PROXY', 'POLY_GNOSIS_SAFE', 'DEPOSIT_WALLET'];
 
 export interface Settings {
@@ -31,6 +34,7 @@ export interface Settings {
   'alerts.intervalSec': number;
   'supervisor.autostart': Record<WorkerName, boolean>;
   'bot.forwardEnabled': boolean;
+  'bot.forwardStrategy': BotForwardStrategy;
   'bot.enabled': boolean;
   'bot.autoRedeem': boolean;
   'bot.redeemMaxGasPol': number;
@@ -155,6 +159,15 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
   'bot.autoRedeem': { default: true, parse: bool, restarts: [] },
   'bot.redeemMaxGasPol': { default: 0.1, parse: numRange(0.01, 10), restarts: [] },
   'bot.forwardEnabled': { default: false, parse: bool, restarts: [] },
+  // Which frozen strategy the forward bridge trades. Changing it re-arms the bridge, like switching it on.
+  'bot.forwardStrategy': {
+    default: 's5',
+    parse: v => {
+      if (v !== 'v2' && v !== 's5') throw new SettingError('must be v2 or s5');
+      return v;
+    },
+    restarts: [],
+  },
   'bot.enabled': { default: false, parse: bool, restarts: [] },
   'bot.simulationMode': { default: true, parse: bool, restarts: [] },
   'bot.walletType': {
@@ -358,7 +371,7 @@ export function applySettingChanges(changes: Record<string, unknown>, db: Databa
     }
   }
 
-  const rearmForward = parsed.some(([k, v]) => ['bot.forwardEnabled', 'bot.enabled', 'bot.simulationMode'].includes(k) && getSetting(k, db) !== v);
+  const rearmForward = parsed.some(([k, v]) => ['bot.forwardEnabled', 'bot.forwardStrategy', 'bot.enabled', 'bot.simulationMode'].includes(k) && getSetting(k, db) !== v);
   const now = Math.floor(Date.now() / 1000);
   db.transaction(() => {
     if (rearmForward) {

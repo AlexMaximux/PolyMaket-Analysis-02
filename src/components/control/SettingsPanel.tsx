@@ -39,7 +39,8 @@ const FIELDS: Record<SettingKey, Field> = {
     flags: { alerts: "alerts", jev: "jev", bot: "bot (never autostarts by default)" },
     hint: "Applies next time the supervisor starts",
   },
-  "bot.forwardEnabled": { label: "Execute frozen forward signals", kind: "bool", hint: "Uses the Frozen strategy on cloud-analysis. Only fresh BTC 1H signals after activation; fixed bot stake. Start the bot worker. Browser need not stay open." },
+  "bot.forwardEnabled": { label: "Execute frozen forward signals", kind: "bool", hint: "Uses the strategy chosen below (cloud-analysis has its forward test). Only fresh BTC 1H signals after activation; fixed bot stake. Start the bot worker. Browser need not stay open." },
+  "bot.forwardStrategy": { label: "Strategy", kind: "select", options: ["s5", "v2"], hint: "s5 = Frozen strategy 1 + Optimised: UP score > 3.25 at 90–100%, DOWN score < 0.75 at 0–98%, minute 30–55. v2 = Frozen strategy 1: score > 3.5 / < 0.5 at 90%+, minute 32+. Both: BTC, Jev + Kev + Span agree, first signal of the hour. Changing it re-arms the bridge: only signals after the change trade, and an hour already bought is never bought again." },
   "bot.autoRedeem": { label: "Auto-redeem wins", kind: "bool", hint: "Checks finalized real BTC 1H winners every minute while the bot worker runs. It remains active when buying is disabled or in simulation. Deposit Wallet redemption is gasless." },
   "bot.redeemMaxGasPol": { label: "Maximum gas per redeem (POL)", kind: "num", hint: "Transactions above this fee cap are not sent. Default: 0.10 POL." },
   "bot.enabled": { label: "Enabled (kill switch)", kind: "bool", hint: "Off by default. While off, every buy signal — Telegram or API — is refused before any market is even looked up." },
@@ -78,7 +79,7 @@ const GROUPS: Array<{ title: string; keys: SettingKey[]; test?: string; danger?:
     test: "bot",
     danger: current => current("bot.enabled") === true && current("bot.simulationMode") === false,
   },
-  { title: "Trading Bot — Forward test", keys: ["bot.forwardEnabled"] },
+  { title: "Trading Bot — Forward test", keys: ["bot.forwardEnabled", "bot.forwardStrategy"] },
   { title: "Trading Bot — Redemption", keys: ["bot.autoRedeem", "bot.redeemMaxGasPol", "bot.builderApiKey", "bot.builderSecret", "bot.builderPassphrase"] },
   { title: "Trading Bot — Telegram", keys: ["bot.telegramToken", "bot.telegramChatId"], test: "bot-telegram" },
 ];

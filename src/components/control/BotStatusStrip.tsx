@@ -124,7 +124,7 @@ export function BotStatusStrip() {
         </div>
       )}
       {status.forward && <div className="mt-2 text-xs text-[#9a9ca3]">
-        Frozen forward {status.forward.strategy}: {status.forward.enabled ? "ON" : "OFF"} · Last scan: {status.forward.lastScan ? new Date(status.forward.lastScan).toLocaleString() : "Waiting for bot worker"}
+        Frozen forward {status.forward.strategy} ({status.forward.strategyName}): {status.forward.enabled ? "ON" : "OFF"} · Last scan: {status.forward.lastScan ? new Date(status.forward.lastScan).toLocaleString() : "Waiting for bot worker"}
         {status.forward.lastError && <div>{status.forward.lastError}</div>}
         {status.notifications && <div>Telegram pending: {status.notifications.pending} · Awaiting retry: {status.notifications.failed}</div>}
       </div>}
