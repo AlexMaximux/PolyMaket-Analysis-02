@@ -8,6 +8,7 @@ import { forwardSnapshotRow } from '../forwardSnapshot';
 import { buildHourlyEtSlug, executeSignal, reconcileRequest } from './executor';
 import { findRequest, pendingRequests } from './ledger';
 import { enqueueNotification, collectNotifications, deliverNotifications } from './notifications';
+import { walletBalanceLine, withBalanceLine } from './balance';
 import { getBotSetting, setBotSetting } from './db';
 import type { SignalRequest, TradeResult } from './types';
 
@@ -41,7 +42,11 @@ function readRows(now: number): SnapshotRow[] {
   }
   return rows;
 }
-export async function runForwardCycle(rows?: SnapshotRow[], execute: (signal: SignalRequest) => Promise<TradeResult> = executeSignal) {
+export async function runForwardCycle(
+  rows?: SnapshotRow[],
+  execute: (signal: SignalRequest) => Promise<TradeResult> = executeSignal,
+  balanceLine: () => Promise<string> = walletBalanceLine,
+) {
   if (!getSetting('bot.forwardEnabled') || !getSetting('bot.enabled')) return;
   const strategy = botStrategy();
   if (!strategy) throw new Error(`Unknown forward strategy ${getSetting('bot.forwardStrategy')}`);
@@ -65,8 +70,15 @@ export async function runForwardCycle(rows?: SnapshotRow[], execute: (signal: Si
   const inserted = getDb().prepare('INSERT OR IGNORE INTO bot_forward_events VALUES(?,?,?)').run(signal.requestId, JSON.stringify(signal), Date.now());
   if (!inserted.changes) return;
   console.log(`[FORWARD] Signal received: BTC 1H ${signal.outcome} · ${signal.expectedMarketSlug} · ${signal.requestId}`);
-  enqueueNotification(`signal:${signal.requestId}`, `📥 سیگنال forward دریافت شد؛ هنوز خرید تأیید نشده\nBTC 1H ${signal.outcome}\n${signal.expectedMarketSlug}\n${signal.requestId}`);
+  // The wallet balance just before the order goes first in the message. The read is capped (see balance.ts), so it
+  // cannot hold the order back for long.
+  const balance = await balanceLine();
+  enqueueNotification(`signal:${signal.requestId}`, withBalanceLine(balance, `📥 سیگنال forward دریافت شد؛ هنوز خرید تأیید نشده\nBTC 1H ${signal.outcome}\n${signal.expectedMarketSlug}\n${signal.requestId}`));
   const result = await execute(signal);
+  // A limit order that is now resting on the book: say so, the purchase message follows when it fills or is cancelled.
+  if (result.status === 'PENDING' && result.price) {
+    enqueueNotification(`resting:${signal.requestId}`, `🕒 سفارش لیمیت روی دفتر سفارش گذاشته شد؛ هنوز خرید انجام نشده\nBTC 1H ${result.outcome}\nقیمت لیمیت: ${(result.price * 100).toFixed(0)}¢ · سهم: ${result.shares ?? '—'}\nتا دقیقهٔ ۵۷ ساعت منتظر می‌ماند و بعد لغو می‌شود.\n${signal.requestId}`);
+  }
   console.log(`[TRADE] ${result.status || (result.success ? 'FILLED' : 'FAILED')} · BTC 1H ${result.outcome || signal.outcome} · $${result.amountUsd ?? '—'} · attempts=${result.attempts ?? 0} · ${result.requestId || signal.requestId}`);
   if (!result.success && !findRequest(signal.requestId!)) enqueueNotification(`blocked:${signal.requestId}`, `⛔ سیگنال forward اجرا نشد؛ وضعیت بات و بودجه را بررسی کنید.\n${signal.expectedMarketSlug}\n${signal.requestId}`);
 }
@@ -77,7 +89,8 @@ export function forwardStatus() {
 export async function startForwardWorker() {
   while (true) {
     try {
-      for (const row of pendingRequests(false)) if (row.order_id) {
+      // Real orders awaiting confirmation, and paper limit orders resting against the real book
+      for (const row of [...pendingRequests(false), ...pendingRequests(true).filter(r => r.state === 'RESTING')]) if (row.order_id) {
         const result = await reconcileRequest(row.request_id);
         if (result.status && result.status !== row.state) console.log(`[RECONCILE] ${row.state} → ${result.status} · ${row.request_id}`);
       }

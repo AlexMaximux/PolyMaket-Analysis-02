@@ -6,6 +6,8 @@ import { getOpenRouterCredit } from '@/lib/openrouterCredit';
 import { resolveActiveMarket } from '@/lib/bot/executor';
 import { normalizePrivateKey } from '@/lib/validate';
 import { createDepositWalletClient, ensureDepositTradingApprovals } from '@/lib/bot/depositWallet';
+import { sendTestSignal } from '@/lib/bot/testSignal';
+import { sendJevTestAlert } from '@/lib/jevTestAlert';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,6 +64,10 @@ export async function POST(request: Request) {
       const ok = await sendTelegram(token, chat, '✅ Polymarket Up/Down: trading bot Telegram settings work.');
       return NextResponse.json({ ok, message: ok ? 'Test message sent' : 'Telegram rejected the message — check token and chat ID' });
     }
+    // A sample forward-signal message from the strategy's latest real signal. It reads only: no order, no ledger entry.
+    if (target === 'bot-signal') return NextResponse.json(await sendTestSignal());
+    // A sample Jev alert from the latest signal of the strategy the alert follows. Records nothing.
+    if (target === 'jev-signal') return NextResponse.json(await sendJevTestAlert());
     return NextResponse.json({ ok: false, message: 'unknown test target' }, { status: 400 });
   } catch (e) {
     return NextResponse.json({ ok: false, message: (e as Error).message });

@@ -17,11 +17,11 @@ export function enqueueNotification(event: string, message: string) {
 }
 export function collectNotifications() {
   findRequest('__init__'); initRedemptions();
-  const rows = getDb().prepare("SELECT * FROM bot_requests WHERE request_id LIKE 'forward:%' AND result IS NOT NULL").all() as BotRequest[];
+  const rows = getDb().prepare("SELECT * FROM bot_requests WHERE request_id LIKE 'forward:%' AND result IS NOT NULL AND state IN ('FILLED','SIMULATED','FAILED','UNKNOWN')").all() as BotRequest[];
   for (const row of rows) {
     const r = JSON.parse(row.result!) as TradeResult;
     const title = row.state === 'FILLED' ? '✅ خرید واقعی تأیید شد' : row.state === 'SIMULATED' ? '🧪 خرید آزمایشی؛ بدون خرج پول' : row.state === 'UNKNOWN' ? '⏳ وضعیت خرید نامشخص؛ سفارش جدید ارسال نمی‌شود' : '❌ خرید انجام نشد';
-    enqueueNotification(`purchase:${row.request_id}:${row.state}`, `${title}\nBTC 1H ${r.outcome}\n${r.slug || ''}\nمبلغ: $${r.amountUsd}\nسهم: ${r.shares ?? '—'}\nقیمت: ${r.price ?? '—'}\nسفارش: ${r.orderId || '—'}\nشناسه: ${row.request_id}`);
+    enqueueNotification(`purchase:${row.request_id}:${row.state}`, `${title}${!r.success && r.error ? `\n${r.error}` : ''}\nBTC 1H ${r.outcome}\n${r.slug || ''}\nمبلغ: $${r.amountUsd}\nسهم: ${r.shares ?? '—'}\nقیمت: ${r.price ?? '—'}\nسفارش: ${r.orderId || '—'}\nشناسه: ${row.request_id}`);
   }
   const redemptions = getDb().prepare("SELECT * FROM bot_redemptions WHERE state='CONFIRMED'").all() as Redemption[];
   for (const row of redemptions) {

@@ -11,6 +11,7 @@ import {
 } from './db';
 import { getSetting, applySettingChanges } from '../settings';
 import type { TradeResult } from './types';
+import { walletBalanceLine, withBalanceLine } from './balance';
 
 const TELEGRAM_API = 'https://api.telegram.org';
 
@@ -254,10 +255,12 @@ export async function startTelegramBotListener() {
               await sendTelegramMessage(token, chatId, 'دستور مربوط به ساعت قبلی است و اجرا نشد.');
               continue;
             }
+            // The wallet balance just before the order goes first in the message.
+            const balance = await walletBalanceLine();
             await sendTelegramMessage(
               token,
               chatId,
-              `⏳ دریافت دستور خرید: <b>${signal.symbol}/${signal.timeframe} ${signal.outcome}</b>\nدر حال بررسی بازار و ثبت سفارش در پلی‌مارکت...`
+              withBalanceLine(balance, `⏳ دریافت دستور خرید: <b>${signal.symbol}/${signal.timeframe} ${signal.outcome}</b>\nدر حال بررسی بازار و ثبت سفارش در پلی‌مارکت...`)
             );
 
             try {

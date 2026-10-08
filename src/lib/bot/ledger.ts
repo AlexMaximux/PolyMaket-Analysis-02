@@ -3,7 +3,9 @@ import { getBotBudgetLimits, getTotalSpent, initializeBotTables, recordBotTrade 
 import { getSetting } from '../settings';
 import type { SignalRequest, TradeRecord, TradeResult } from './types';
 
-export type RequestState = 'RESERVED' | 'SUBMITTING' | 'UNKNOWN' | 'FILLED' | 'SIMULATED' | 'FAILED';
+// RESTING: a limit order accepted by the exchange and waiting on the book. It keeps its budget reserved and blocks a new
+// order, like SUBMITTING, but is polled until it fills, is cancelled, or the hour is nearly over.
+export type RequestState = 'RESERVED' | 'SUBMITTING' | 'RESTING' | 'UNKNOWN' | 'FILLED' | 'SIMULATED' | 'FAILED';
 export interface BotRequest {
   request_id: string; fingerprint: string; state: RequestState; simulated: number;
   amount: number; created_at: number; updated_at: number; order_id: string | null;
@@ -25,7 +27,7 @@ export function findRequest(id: string): BotRequest | undefined {
 }
 export function pendingRequests(simulated: boolean): BotRequest[] {
   init();
-  return getDb().prepare("SELECT * FROM bot_requests WHERE simulated = ? AND state IN ('RESERVED','SUBMITTING','UNKNOWN')")
+  return getDb().prepare("SELECT * FROM bot_requests WHERE simulated = ? AND state IN ('RESERVED','SUBMITTING','RESTING','UNKNOWN')")
     .all(Number(simulated)) as BotRequest[];
 }
 export function reservedBudget(simulated: boolean): number {
@@ -66,6 +68,24 @@ export function markRejected(id: string) {
     .run(Date.now(), id);
   if (r.changes !== 1) throw new Error('Cannot retry this request');
 }
+export function markResting(id: string) {
+  const r = getDb().prepare("UPDATE bot_requests SET state = 'RESTING', result = NULL, updated_at = ? WHERE request_id = ? AND state IN ('SUBMITTING','UNKNOWN','RESTING')")
+    .run(Date.now(), id);
+  if (r.changes !== 1) throw new Error('Cannot mark this request as resting');
+}
+// Limit orders rest on the book, so the "a FOK order never rests" shortcuts of reconcileRequest must not apply to them.
+// The marker is written before the order is sent, so a crash cannot lose it.
+export function recordLimitOrder(id: string, price: number, size: number) {
+  init();
+  getDb().exec('CREATE TABLE IF NOT EXISTS bot_limit_orders (request_id TEXT PRIMARY KEY, price REAL NOT NULL, size REAL NOT NULL)');
+  getDb().prepare('INSERT OR REPLACE INTO bot_limit_orders(request_id, price, size) VALUES (?, ?, ?)').run(id, price, size);
+}
+export function limitOrderInfo(id: string): { price: number; size: number } | undefined {
+  init();
+  getDb().exec('CREATE TABLE IF NOT EXISTS bot_limit_orders (request_id TEXT PRIMARY KEY, price REAL NOT NULL, size REAL NOT NULL)');
+  return getDb().prepare('SELECT price, size FROM bot_limit_orders WHERE request_id = ?').get(id) as { price: number; size: number } | undefined;
+}
+export const isLimitOrder = (id: string) => !!limitOrderInfo(id);
 export function markUnknown(id: string, result: TradeResult) {
   getDb().prepare("UPDATE bot_requests SET state = 'UNKNOWN', result = ?, updated_at = ? WHERE request_id = ? AND state IN ('SUBMITTING','UNKNOWN')")
     .run(JSON.stringify(result), Date.now(), id);

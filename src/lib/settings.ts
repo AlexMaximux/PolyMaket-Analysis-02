@@ -19,12 +19,18 @@ export type BotWalletType = 'EOA' | 'POLY_PROXY' | 'POLY_GNOSIS_SAFE' | 'DEPOSIT
 // Frozen strategies the forward bridge can trade (BOT_STRATEGIES in lib/bot/forward): v2 = Frozen strategy 1,
 // s5 = Frozen strategy 1 + Optimised.
 export type BotForwardStrategy = 'v2' | 's5';
+// Which rule the Jev Telegram alert follows: a strategy, or whichever one the trading bot trades.
+export type JevAlertStrategy = 'v1' | 'v2' | 's2' | 's3' | 's4' | 's5' | 'bot';
+// How a buy is priced: a market-style buy capped at best ask + slippage, one that sweeps the book up to 0.99, or a limit
+// order N cents under the best ask that rests on the book until it fills or the hour is nearly over.
+export type BotOrderPriceMode = 'slippage' | 'market' | 'limit';
 const WALLET_TYPES: BotWalletType[] = ['EOA', 'POLY_PROXY', 'POLY_GNOSIS_SAFE', 'DEPOSIT_WALLET'];
 
 export interface Settings {
   'openrouter.apiKey': string;
   'jev.telegramToken': string;
   'jev.telegramChat': string;
+  'jev.alertStrategy': JevAlertStrategy;
   'watchdog.telegramToken': string;
   'watchdog.telegramChat': string;
   'jev.coins': JevCoin[];
@@ -48,7 +54,8 @@ export interface Settings {
   'bot.rpcUrl': string;
   'bot.maxBudget': number;
   'bot.perTradeAmount': number;
-  'bot.orderPriceMode': 'slippage' | 'market';
+  'bot.orderPriceMode': BotOrderPriceMode;
+  'bot.limitOffsetCents': number;
   'bot.slippageCents': number;
   'bot.maxAttempts': number;
   'bot.telegramToken': string;
@@ -119,6 +126,16 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
     restarts: ['jev'],
   },
   'jev.telegramChat': { env: ['JEV_TELEGRAM_CHAT_ID', 'TELEGRAM_CHAT_ID'], default: '', parse: requiredString('Chat ID'), restarts: ['jev'] },
+  // The rule a Jev Telegram alert fires on. 'v2' (Frozen strategy 1) is the original rule and the default, so an update does
+  // not change which signals are sent; 'bot' follows bot.forwardStrategy. Read when a record is checked: no restart needed.
+  'jev.alertStrategy': {
+    default: 'v2',
+    parse: v => {
+      if (!['v1', 'v2', 's2', 's3', 's4', 's5', 'bot'].includes(v as string)) throw new SettingError('must be a strategy id (v1, v2, s2, s3, s4, s5) or bot');
+      return v as JevAlertStrategy;
+    },
+    restarts: [],
+  },
   'watchdog.telegramToken': {
     secret: true,
     env: ['WATCHDOG_TELEGRAM_BOT_TOKEN'],
@@ -217,15 +234,18 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
   },
   'bot.maxBudget': { default: 100, parse: numRange(1, 100_000), restarts: [] },
   'bot.perTradeAmount': { default: 10, parse: numRange(1, 100_000), restarts: [] },
-  // How the buy order is priced: best ask + slippage (a hard worst price), or market (sweep the book up to 0.99).
+  // How the buy order is priced: best ask + slippage (a hard worst price), market (sweep the book up to 0.99), or limit
+  // (rest N cents under the best ask, see bot.limitOffsetCents).
   'bot.orderPriceMode': {
     default: 'slippage',
     parse: v => {
-      if (v !== 'slippage' && v !== 'market') throw new SettingError('must be slippage or market');
+      if (v !== 'slippage' && v !== 'market' && v !== 'limit') throw new SettingError('must be slippage, market or limit');
       return v;
     },
     restarts: [],
   },
+  // Limit mode: how many cents under the best ask at order time the buy order rests.
+  'bot.limitOffsetCents': { default: 4, parse: intRange(1, 50), restarts: [] },
   'bot.slippageCents': { default: 2, parse: intRange(0, 20), restarts: [] },
   // Buy attempts per signal. Each retry re-reads the book and signs a fresh order; only a definite non-fill is retried.
   'bot.maxAttempts': { default: 3, parse: intRange(1, 10), restarts: [] },

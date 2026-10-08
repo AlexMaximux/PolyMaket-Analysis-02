@@ -21,6 +21,7 @@ const FIELDS: Record<SettingKey, Field> = {
   "openrouter.apiKey": { label: "API key", kind: "secret" },
   "jev.telegramToken": { label: "Bot token", kind: "secret", hint: "Default target for Jev signal alerts" },
   "jev.telegramChat": { label: "Chat ID", kind: "text" },
+  "jev.alertStrategy": { label: "Alert rule", kind: "select", options: ["v1", "v2", "s2", "s3", "s4", "s5", "bot"], hint: "Which frozen strategy sends a Jev alert (the same rules as the forward tests on Cloud Analysis). v1 = first version, 3/3 agree, any minute (closed). v2 = Frozen strategy 1: score > 3.5 / < 0.5 at 90%+, minute 32+. s2 = v2 + Solar confidence 80%+. s3 = v2 + skip hours that already flipped. s4 = Jev alone, 3.25 / 0.75 at 85%+, the hour's first signal only if at minute 45+. s5 = Frozen strategy 1 + Optimised (UP > 3.25 at 90–100%, DOWN < 0.75 at 0–98%, minute 30–55). bot = whichever strategy the trading bot trades. Only the first signal of each hour is sent. Takes effect on the next record, no restart." },
   "watchdog.telegramToken": { label: "Bot token", kind: "secret", hint: "Sends a message when a worker or the BTC prediction records stall" },
   "watchdog.telegramChat": { label: "Chat ID", kind: "text" },
   "jev.coins": { label: "Coins", kind: "coins" },
@@ -58,7 +59,8 @@ const FIELDS: Record<SettingKey, Field> = {
   "bot.builderPassphrase": { label: "Builder passphrase", kind: "secret", hint: "Created automatically; leave empty to keep the saved value." },
   "bot.rpcUrl": { label: "Polygon RPC URL", kind: "text", hint: "Optional — defaults to a public Polygon RPC" },
   "bot.maxBudget": { label: "Total budget cap ($)", kind: "num" },
-  "bot.orderPriceMode": { label: "Order price", kind: "select", options: ["slippage", "market"], hint: "slippage: pay at most the best ask + the slippage below. market: take the best available prices up to 0.99 (fills almost always, but can pay far above the signal price)." },
+  "bot.orderPriceMode": { label: "Order price", kind: "select", options: ["slippage", "market", "limit"], hint: "slippage: pay at most the best ask + the slippage below. market: take the best available prices up to 0.99 (fills almost always, but can pay far above the signal price). limit: rest a buy order N cents UNDER the best ask (set below) on the book. It fills only if the price comes down to it; at minute 57 of the hour an unfilled order is cancelled and that hour is skipped (a partial fill is kept). Deposit Wallet only; in simulation mode it is filled when the real best ask reaches your price." },
+  "bot.limitOffsetCents": { label: "Limit: cents below the best ask", kind: "int", hint: "1–50. Used when Order price is limit. The price is the best ask when the order is sent minus this many cents, rounded down to a whole cent. A limit order skips signals that arrive after minute 57 of the hour.", showIf: current => current("bot.orderPriceMode") === "limit" },
   "bot.slippageCents": { label: "Slippage (¢)", kind: "int", hint: "0–20. Used when Order price is slippage: the order is cancelled instead of filled above best ask + this many cents." },
   "bot.maxAttempts": { label: "Buy attempts", kind: "int", hint: "1–10. If the order is not filled (price moved, book too thin), try again up to this many times, each time at the fresh market price. Ambiguous results are never retried, to avoid buying twice." },
   "bot.perTradeAmount": { label: "Per-trade amount ($)", kind: "num", hint: "Fixed amount for each BTC 1H buy. Polymarket normally requires at least 5 shares; use $5 or more to cover that minimum at any valid price." },
@@ -66,22 +68,36 @@ const FIELDS: Record<SettingKey, Field> = {
   "bot.telegramChatId": { label: "Private user/chat ID", kind: "text" },
 };
 
-const GROUPS: Array<{ title: string; keys: SettingKey[]; test?: string; danger?: (current: (key: SettingKey) => unknown) => boolean }> = [
+const GROUPS: Array<{ title: string; keys: SettingKey[]; test?: string; extraTest?: { target: string; label: string; title: string }; danger?: (current: (key: SettingKey) => unknown) => boolean }> = [
   { title: "OpenRouter", keys: ["openrouter.apiKey"], test: "openrouter" },
-  { title: "Jev Telegram", keys: ["jev.telegramToken", "jev.telegramChat"], test: "telegram" },
+  {
+    title: "Jev Telegram",
+    keys: ["jev.telegramToken", "jev.telegramChat", "jev.alertStrategy"],
+    test: "telegram",
+    extraTest: { target: "jev-signal", label: "Send test alert", title: "Sends the Jev Telegram chat a sample of the alert, built from the latest real signal of the selected rule, so you can see the message. Nothing is recorded." },
+  },
   { title: "Heartbeat alerts", keys: ["watchdog.telegramToken", "watchdog.telegramChat"] },
   { title: "Jev collector", keys: ["jev.coins", "jev.models", "jev.recordIntervalSec", "jev.snapshotIntervalSec"] },
   { title: "Intervals", keys: ["alerts.intervalSec"] },
   { title: "Supervisor", keys: ["supervisor.autostart"] },
   {
     title: "Trading Bot — Wallet & Risk",
-    keys: ["bot.enabled", "bot.simulationMode", "bot.walletType", "bot.proxyAddress", "bot.privateKey", "bot.rpcUrl", "bot.maxBudget", "bot.perTradeAmount", "bot.orderPriceMode", "bot.slippageCents", "bot.maxAttempts"],
+    keys: ["bot.enabled", "bot.simulationMode", "bot.walletType", "bot.proxyAddress", "bot.privateKey", "bot.rpcUrl", "bot.maxBudget", "bot.perTradeAmount", "bot.orderPriceMode", "bot.limitOffsetCents", "bot.slippageCents", "bot.maxAttempts"],
     test: "bot",
     danger: current => current("bot.enabled") === true && current("bot.simulationMode") === false,
   },
-  { title: "Trading Bot — Forward test", keys: ["bot.forwardEnabled", "bot.forwardStrategy"] },
+  {
+    title: "Trading Bot — Forward test",
+    keys: ["bot.forwardEnabled", "bot.forwardStrategy"],
+    extraTest: { target: "bot-signal", label: "Send test signal", title: "Sends the trading bot Telegram chat a sample of the signal message: the strategy's latest real signal, your wallet balance and a preview of the order. No order is placed." },
+  },
   { title: "Trading Bot — Redemption", keys: ["bot.autoRedeem", "bot.redeemMaxGasPol", "bot.builderApiKey", "bot.builderSecret", "bot.builderPassphrase"] },
-  { title: "Trading Bot — Telegram", keys: ["bot.telegramToken", "bot.telegramChatId"], test: "bot-telegram" },
+  {
+    title: "Trading Bot — Telegram",
+    keys: ["bot.telegramToken", "bot.telegramChatId"],
+    test: "bot-telegram",
+    extraTest: { target: "bot-signal", label: "Send test signal", title: "Sends this chat a sample of the signal message: the strategy\'s latest real signal, your wallet balance and a preview of the order. No order is placed." },
+  },
 ];
 
 export function SettingsPanel({ notify }: { notify: (ok: boolean, msg: string) => void }) {
@@ -284,6 +300,11 @@ export function SettingsPanel({ notify }: { notify: (ok: boolean, msg: string) =
                   )}
                 </h3>
                 <div className="flex gap-2">
+                  {g.extraTest && (
+                    <button className={btn} disabled={busy === `test:${g.extraTest.target}`} onClick={() => test(g.extraTest!.target)} title={g.extraTest.title}>
+                      <FlaskConical className="w-3.5 h-3.5" /> {g.extraTest.label}
+                    </button>
+                  )}
                   {g.test && (
                     <button className={btn} disabled={busy === `test:${g.test}`} onClick={() => test(g.test!)} title="Uses the saved values">
                       <FlaskConical className="w-3.5 h-3.5" /> Test saved

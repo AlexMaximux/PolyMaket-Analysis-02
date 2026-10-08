@@ -245,6 +245,11 @@ export const FROZEN_STRATEGY_5: FrozenStrategy = {
   checkpoints: [10, 20, 30, 50],
 };
 
+// Every frozen strategy by id. The Jev alert (setting jev.alertStrategy) can follow any of them; the bot trades v2 or s5.
+export const STRATEGIES_BY_ID: Record<string, FrozenStrategy> = {
+  v1: STRATEGY_HISTORY[0], v2: FROZEN_STRATEGY, s2: FROZEN_STRATEGY_2, s3: FROZEN_STRATEGY_3, s4: FROZEN_STRATEGY_4, s5: FROZEN_STRATEGY_5,
+};
+
 export interface Trade {
   row: SnapshotRow;
   coin: string;

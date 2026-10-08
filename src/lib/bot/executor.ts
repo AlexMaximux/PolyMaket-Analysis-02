@@ -2,9 +2,9 @@ import { getDb } from '../db';
 import { getRedemptionStatus } from './redeem';
 import { ClobClient, Side, OrderType, type OrderBookSummary } from '@polymarket/clob-client';
 import { getBotBudgetLimits, getTotalSpent, getRecentTrades, getTradeCount } from './db';
-import { getSetting } from '../settings';
+import { getSetting, type BotOrderPriceMode } from '../settings';
 import { createLiveClient, getBotWalletConfig, walletIdentity, CLOB_HOST } from './live';
-import { findRequest, reserveRequest, reservedBudget, pendingRequests, prepareSubmission, markRejected, markUnknown, finishRequest, type BotRequest } from './ledger';
+import { findRequest, reserveRequest, reservedBudget, pendingRequests, prepareSubmission, markRejected, markUnknown, markResting, recordLimitOrder, isLimitOrder, limitOrderInfo, finishRequest, type BotRequest } from './ledger';
 import type { SignalRequest, ActiveMarketInfo, TradeResult, BotStatus, TradeOutcome } from './types';
 import { OrderSide as UnifiedOrderSide, OrderType as UnifiedOrderType } from '@polymarket/client';
 import { createDepositWalletClient, depositOrderHash, ensureDepositTradingApprovals, getDepositCollateralBalanceUsd } from './depositWallet';
@@ -63,7 +63,7 @@ const MARKET_PRICE_CAP = 0.99;
  * both tick sizes). 'market': the book is swept up to 0.99. The order still fills at the best available
  * prices; the cap only bounds how far the price may run before the order is killed instead of filled.
  */
-export function orderPriceCap(bestAsk: number, mode: 'slippage' | 'market', slippageCents: number): number {
+export function orderPriceCap(bestAsk: number, mode: BotOrderPriceMode, slippageCents: number): number {
   const wanted = mode === 'market' ? MARKET_PRICE_CAP : Math.ceil((bestAsk + slippageCents / 100) * 100 - 1e-9) / 100;
   return Math.min(0.999, Math.max(bestAsk, wanted));
 }
@@ -214,6 +214,7 @@ export async function reconcileRequest(requestId: string): Promise<TradeResult> 
   if (!row) throw new Error('Unknown request ID');
   const signal = signalOf(row);
   if (['FILLED', 'SIMULATED', 'FAILED'].includes(row.state)) return JSON.parse(row.result!);
+  if (row.state === 'RESTING') return advanceResting(signal, row);
   // Do not race an active worker. An interrupted preparation has no posted order and can be released.
   if (row.state !== 'UNKNOWN' && Date.now() - row.updated_at < 120_000) {
     return { ...resultFor(signal, row, 'سفارش در حال پردازش است.'), status: 'PENDING' };
@@ -243,11 +244,18 @@ export async function reconcileRequest(requestId: string): Promise<TradeResult> 
         }
         // FOK orders never rest on the book. If both the order endpoint and the
         // authenticated trade ledger are empty after five minutes, no fill occurred.
+        // A limit order can rest, and its fills are not in this ledger as a taker: only the exchange can say.
+        if (isLimitOrder(row.request_id)) return unknown(signal, row);
         const oldFok = Date.now() - row.created_at >= 5 * 60_000;
         if (oldFok) return settle(signal, row, resultFor(signal, row, 'سفارش در CLOB ثبت نشده و هیچ معامله‌ای انجام نشده است؛ بودجه آزاد شد.'));
         return unknown(signal, row);
       }
       if (order.id !== row.order_id || String(order.assetId) !== row.token_id || order.side.toUpperCase() !== 'BUY') return unknown(signal, row);
+      // A limit order (GTC/GTD) found in any state is followed by advanceResting, which settles it from the exchange's own numbers.
+      if (isLimitOrder(row.request_id) && /^(GTC|GTD)$/i.test(String(order.orderType))) {
+        markResting(row.request_id);
+        return advanceResting(signal, findRequest(row.request_id)!);
+      }
       if (['CANCELED', 'CANCELLED'].includes(order.status.toUpperCase()) && Number(order.sizeMatched) === 0) {
         return settle(signal, row, resultFor(signal, row, 'سفارش بدون خرید لغو شده است.'));
       }
@@ -277,6 +285,135 @@ export async function reconcileRequest(requestId: string): Promise<TradeResult> 
   } catch { /* retain reservation; never leak SDK credentials through errors */ }
   return unknown(signal, row);
 }
+/** A limit buy is cancelled this long before the market ends (minute 57 of the hour); later than that it is not worth resting. */
+export const LIMIT_CANCEL_BEFORE_END_MS = 3 * 60_000;
+// ET offsets are whole hours, so the end of a market hour is the next UTC hour boundary.
+const hourEndMs = (t: number) => (Math.floor(t / 3_600_000) + 1) * 3_600_000;
+
+/** N cents under the best ask, rounded DOWN to a 0.01 tick (valid on both tick sizes): never above ask - N. */
+export function limitBuyPrice(bestAsk: number, offsetCents: number): number {
+  return Math.floor(bestAsk * 100 - offsetCents + 1e-9) / 100;
+}
+/** Shares for a limit buy, to 2 decimals and rounded DOWN, so the cost never exceeds the amount. */
+export function limitBuySize(amountUsd: number, price: number): number {
+  return Math.floor((amountUsd / price) * 100 + 1e-9) / 100;
+}
+const LIMIT_NOT_FILLED = 'سفارش لیمیت تا دقیقهٔ ۵۷ ساعت به قیمت مورد نظر نرسید؛ لغو شد و خریدی انجام نشد.';
+
+/**
+ * Follow a resting limit buy. Real orders are read from the exchange: fully matched settles as a fill, cancelled
+ * settles as a fill of what was matched (a partial fill is kept) or as no purchase, and a live order is cancelled
+ * at LIMIT_CANCEL_BEFORE_END_MS before the market ends. Paper (simulated) orders fill when the real best ask reaches
+ * the limit. A read or cancel that fails leaves the order resting and is tried again; nothing is guessed.
+ */
+async function advanceResting(signal: SignalRequest, row: BotRequest): Promise<TradeResult> {
+  const limit = row.price_cap ?? 0;
+  const end = hourEndMs(row.created_at);
+  const cancelAt = end - LIMIT_CANCEL_BEFORE_END_MS;
+  const info = limitOrderInfo(row.request_id);
+  const waiting = (): TradeResult => ({
+    ...resultFor(signal, row), status: 'PENDING', price: limit, shares: info?.size, amountUsd: info ? Number((info.size * limit).toFixed(4)) : row.amount,
+    orderId: row.order_id ?? undefined,
+  });
+  const fill = (shares: number, price: number): TradeResult => {
+    const amount = shares * price;
+    if (!validFill(amount, shares, row)) return unknown(signal, row);
+    return settle(signal, row, { ...resultFor(signal, row), success: true, amountUsd: amount, shares, price: amount / shares, orderId: row.order_id ?? undefined });
+  };
+  const missed = () => settle(signal, row, resultFor(signal, row, LIMIT_NOT_FILLED));
+
+  if (row.simulated) {
+    const market = await resolveActiveMarket('btc', '1H', signal.outcome);
+    const sameHour = !!market && market.slug === row.slug;
+    const ask = market?.selectedBestAsk;
+    if (sameHour && ask !== null && ask !== undefined && ask <= limit + 1e-9) return fill(limitBuySize(row.amount, limit), limit);
+    if (Date.now() >= cancelAt || (!!market && !sameHour)) return missed();
+    return waiting();
+  }
+  if (row.wallet !== walletIdentity()) return { ...resultFor(signal, row, 'برای بررسی سفارش، کیف پول قبلی را برگردانید.'), status: 'UNKNOWN' };
+  try {
+    const { client } = await createDepositWalletClient();
+    const read = async () => {
+      const order = await client.fetchOrder({ orderId: row.order_id! });
+      if (order.id !== row.order_id || String(order.assetId) !== row.token_id || order.side.toUpperCase() !== 'BUY') throw new Error('mismatch');
+      return order;
+    };
+    // null while the order is still on the book
+    const verdict = (order: Awaited<ReturnType<typeof read>>): TradeResult | null => {
+      const status = order.status.toUpperCase(), matched = Number(order.sizeMatched), size = Number(order.originalSize);
+      const full = status === 'MATCHED' || (size > 0 && matched >= size - 1e-6);
+      const closed = /^CANCEL/.test(status) || status === 'EXPIRED';
+      if (!full && !closed) return null;
+      if (matched > 0 && Math.abs(Number(order.price) - limit) < 1e-9) return fill(matched, Number(order.price));
+      if (matched > 0) return unknown(signal, row);
+      return missed();
+    };
+    let order = await read();
+    let done = verdict(order);
+    if (done) return done;
+    if (Date.now() >= cancelAt) {
+      await client.cancelOrder({ orderId: row.order_id! });
+      order = await read();
+      done = verdict(order);
+      if (done) return done;
+    }
+    return waiting();
+  } catch (err) {
+    if (err instanceof Error && err.message === 'mismatch') return unknown(signal, row);
+    // A read or cancel that failed proves nothing. Keep waiting, but flag an order that outlived its market by far.
+    return Date.now() > end + 10 * 60_000 ? unknown(signal, row) : waiting();
+  }
+}
+
+/** Place a limit buy N cents under the best ask. It rests (state RESTING) until it fills or is cancelled; see advanceResting. */
+async function placeLimitOrder(signal: SignalRequest, row: BotRequest, market: ActiveMarketInfo, bestAsk: number, identity: string, base: TradeResult): Promise<TradeResult> {
+  const price = limitBuyPrice(bestAsk, getSetting('bot.limitOffsetCents'));
+  if (!(price >= 0.02)) throw new Error('قیمت لیمیت (چند سنت زیر قیمت فروش) بیش از حد پایین می‌شود؛ سفارشی ارسال نشد.');
+  const size = limitBuySize(row.amount, price);
+  if (market.minimumOrderSize && size + 1e-9 < market.minimumOrderSize) {
+    throw new Error(`مبلغ ثابت در قیمت لیمیت ${price.toFixed(2)} برای حداقل ${market.minimumOrderSize} سهم کافی نیست؛ حداقل ${(market.minimumOrderSize * price).toFixed(2)} دلار لازم است.`);
+  }
+  if (Date.now() >= hourEndMs(Date.now()) - LIMIT_CANCEL_BEFORE_END_MS) throw new Error('برای سفارش لیمیت دیر است (بعد از دقیقهٔ ۵۷ ساعت)؛ سفارشی ارسال نشد.');
+  const result: TradeResult = { ...base, price, shares: size, amountUsd: Number((size * price).toFixed(4)) };
+  assertStillAllowed(row, market, identity, signal);
+  if (row.simulated) {
+    recordLimitOrder(row.request_id, price, size);
+    prepareSubmission(row.request_id, `sim_${row.request_id}`, market, price, identity);
+    markResting(row.request_id);
+    return await advanceResting(signal, findRequest(row.request_id)!);
+  }
+  const geo = await getPolymarketGeoStatus(true);
+  if (!geo.checked) throw new Error('بررسی محدودیت جغرافیایی Polymarket ناموفق بود؛ برای ایمنی سفارش ارسال نشد.');
+  if (geo.apiBlocked) throw new Error(`خرید جدید از موقعیت ${geo.country || 'فعلی'} در API پلی‌مارکت محدود است؛ سفارش ارسال نشد.`);
+  if (getBotWalletConfig().walletType !== 'DEPOSIT_WALLET') throw new Error('سفارش لیمیت فقط برای Deposit Wallet پشتیبانی می‌شود؛ سفارشی ارسال نشد.');
+  const { client } = await createDepositWalletClient({ provisionBuilder: true });
+  await ensureDepositTradingApprovals(client);
+  const negRisk = market.selectedTokenId.startsWith('0x') ? false : await fetchNegRisk(client, { assetId: market.selectedTokenId });
+  const signed = await client.createLimitOrder({ assetId: market.selectedTokenId, price, size, side: UnifiedOrderSide.BUY });
+  assertStillAllowed(row, market, identity, signal);
+  const orderId = depositOrderHash(signed, negRisk);
+  recordLimitOrder(row.request_id, price, size);
+  prepareSubmission(row.request_id, orderId, market, price, identity);
+  row = findRequest(row.request_id)!;
+  let response;
+  try { response = await client.postOrder(signed); }
+  catch (e) {
+    console.warn(`[TRADE] limit postOrder threw (ambiguous): ${describeOrderError(e).text}`);
+    return await reconcileAfterUnknown(signal, row);
+  }
+  if (response.ok && response.orderId === orderId) {
+    markResting(row.request_id);
+    // A buy at the limit can also match at once; read it back now rather than waiting for the next poll.
+    return await advanceResting(signal, findRequest(row.request_id)!);
+  }
+  if (!response.ok) {
+    markRejected(row.request_id);
+    row = findRequest(row.request_id)!;
+    return settle(signal, row, { ...result, orderId: undefined, error: 'CLOB سفارش لیمیت را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.' });
+  }
+  return await reconcileAfterUnknown(signal, row);
+}
+
 function validFill(amount: number, shares: number, row: BotRequest) {
   return Number.isFinite(amount) && Number.isFinite(shares) && amount > 0 && shares > 0 && amount <= row.amount + 0.000001 &&
     row.price_cap !== null && amount / shares <= row.price_cap + 0.000001;
@@ -319,6 +456,7 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
     if (signal.expectedMarketSlug && signal.expectedMarketSlug !== market.slug) throw new Error('بازار سیگنال با بازار جاری متفاوت است؛ خرید انجام نشد.');
     const bestAsk = market.selectedBestAsk;
     if (bestAsk === null || !Number.isFinite(bestAsk) || bestAsk <= 0 || bestAsk >= 1 || !market.selectedTokenId) throw new Error('قیمت خرید معتبر در دفتر سفارش وجود ندارد.');
+    if (getSetting('bot.orderPriceMode') === 'limit') return await placeLimitOrder(signal, row, market, bestAsk, identity, { ...result, slug: market.slug, tokenId: market.selectedTokenId });
     // Not the exact best ask: the price moves between the read and the order, and a cap equal to the ask
     // makes the FOK order die on the first tick. The cap is what the order may pay at worst.
     let cap = orderPriceCap(bestAsk, getSetting('bot.orderPriceMode'), getSetting('bot.slippageCents'));
@@ -443,6 +581,7 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
     return settle(signal, row, result);
   } catch (e) {
     row = findRequest(row.request_id)!;
+    if (row.state === 'RESTING') return await advanceResting(signal, row);
     if (['SUBMITTING', 'UNKNOWN'].includes(row.state)) return unknown(signal, row);
     // Preparation errors cannot have submitted an order. Do not surface raw SDK error objects.
     const message = e instanceof Error && /[\u0600-\u06ff]/.test(e.message) ? e.message : 'آماده‌سازی یا ثبت معامله ناموفق بود؛ سفارشی ارسال نشد.';

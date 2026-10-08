@@ -148,7 +148,7 @@ describe('fixed BTC 1H execution', () => {
     expect(r.price).toBeCloseTo(0.5);
   });
   it('rejects an invalid order price mode or slippage', () => {
-    expect(applySettingChanges({ 'bot.orderPriceMode': 'limit' }, db).ok).toBe(false);
+    expect(applySettingChanges({ 'bot.orderPriceMode': 'stop' }, db).ok).toBe(false);
     expect(applySettingChanges({ 'bot.slippageCents': 21 }, db).ok).toBe(false);
     expect(applySettingChanges({ 'bot.slippageCents': -1 }, db).ok).toBe(false);
   });

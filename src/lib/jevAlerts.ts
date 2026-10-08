@@ -4,6 +4,8 @@ import { loadEnvConfig } from '@next/env';
 import { sendTelegram } from './alerts';
 import { getSetting } from './settings';
 import { getDb } from './db';
+import { STRATEGIES_BY_ID, FROZEN_STRATEGY, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from './signalAnalysis';
+import { forwardSnapshotRow } from './forwardSnapshot';
 
 try {
   loadEnvConfig(process.cwd());
@@ -95,106 +97,74 @@ export interface JevSignalResult {
   date?: string;
 }
 
+/** The strategy a Jev alert fires on: the jev.alertStrategy setting, or the bot's strategy when it says "bot". */
+export function alertStrategy(): FrozenStrategy {
+  try {
+    const choice = getSetting('jev.alertStrategy');
+    const id = choice === 'bot' ? getSetting('bot.forwardStrategy') : choice;
+    return STRATEGIES_BY_ID[id] ?? FROZEN_STRATEGY;
+  } catch {
+    return FROZEN_STRATEGY;
+  }
+}
+
+/** Persian description of a strategy for the alert message. v2 keeps the exact line it always had. */
+export function alertStrategyLabel(strategy: FrozenStrategy): string {
+  if (strategy.id === 'v2') return 'BTC · اجماع ۳ مدل (Jev+Kev+Span) · اولین سیگنال بعد از ۳۱';
+  if (strategy.id !== 's5') return `${strategy.id}: ${strategy.name}`;
+  const r = strategy.rule;
+  return `BTC · اجماع ۳ مدل (Jev+Kev+Span) · Frozen strategy 1 + Optimised · دقیقه ${r.minMinute} تا ${r.maxMinute} · UP بالاتر از ${r.bullishScore} / DOWN پایین‌تر از ${r.bearishScore}`;
+}
+
 /**
- * Evaluate if a record matches the Frozen Strategy v2 conditional rule:
- * 1. Coin: BTC only
- * 2. Minute filter: Strictly after minute 31 of the hour (minute >= 32, i.e. 32-59)
- * 3. Jev signal:
- *    - BULLISH (تیک آبی): Jev Score > 3.5 AND Score Confidence >= 90% (0.90) -> UP
- *    - BEARISH (تیک قرمز): Jev Score < 0.5 AND Score Confidence >= 90% (0.90) -> DOWN
- * 4. 3 of 3 consensus: Kev-4b AND Span-01 directions must strictly match Jev's direction
- * 5. Deduplication key: Hour market key (first signal per hour)
+ * The earlier snapshot rows of the same coin and market hour, from jev/history. Strategies that look at the hour so far
+ * (the first signal of the hour, a flip earlier in the hour) need them to decide about the record in hand.
  */
-export function evaluateJevRecordSignal(record: any): JevSignalResult {
-  // 1. Coin check: strictly BTC
-  const coin = (record?.coin || (record?.filename ? String(record.filename).split('_')[0] : '')).toUpperCase();
-  if (coin !== 'BTC') {
-    return { isSignal: false };
-  }
-
-  // 2. Parse time and minute
-  const et = record?.et_time || '';
-  const m = et.match(/^(\d{4}-\d{2}-\d{2})[ _T](\d{2})[:-](\d{2})/);
-  let hour = m ? parseInt(m[2], 10) : null;
-  let minute = m ? parseInt(m[3], 10) : null;
-  let date = m ? m[1] : '';
-
-  if (minute == null && record?.timestamp) {
-    const d = new Date(record.timestamp);
-    if (!isNaN(d.getTime())) {
-      minute = d.getUTCMinutes();
-      hour = d.getUTCHours();
-      date = d.toISOString().slice(0, 10);
+export function readSameHourRows(record: any, filename: string): SnapshotRow[] {
+  try {
+    const m = String(record?.et_time || '').match(/^(\d{4}-\d{2}-\d{2})[ _T](\d{2})/);
+    if (!m) return [];
+    const coin = String(record?.coin || 'BTC').toLowerCase();
+    const prefix = `${coin}_updown_${m[1]}_${m[2]}-`;
+    const dir = path.join(process.cwd(), 'jev', 'history');
+    if (!fs.existsSync(dir)) return [];
+    const rows: SnapshotRow[] = [];
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith(prefix) || !name.endsWith('.json') || name === filename) continue;
+      try { rows.push(forwardSnapshotRow(name, JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))); } catch { /* half-written */ }
     }
+    return rows;
+  } catch {
+    return [];
   }
+}
 
-  // 3. Minute filter: only signals after minute 31 of the hour (minute >= 32)
-  if (minute == null || minute <= 31) {
-    return { isSignal: false };
-  }
-
-  // 4. Jev model evaluation
-  const p = record?.prediction || record?.predictions?.jev;
-  if (!p || p.score == null) {
-    return { isSignal: false };
-  }
-
-  const score = Number(p.score);
-
-  // Extract score_confidence strictly (0 to 1 converted to 0-100)
-  let rawConf = p.score_confidence;
-  if (rawConf == null && p.raw_decision?.answers?.one_hour_score?.confidence != null) {
-    rawConf = p.raw_decision.answers.one_hour_score.confidence;
-  }
-
-  if (rawConf == null) {
-    return { isSignal: false };
-  }
-
-  const confPercent = Number(rawConf) <= 1 ? Number(rawConf) * 100 : Number(rawConf);
-
-  let dir: 'UP' | 'DOWN' | null = null;
-  let type: 'BULLISH' | 'BEARISH' | null = null;
-
-  if (score > 3.5 && confPercent >= 90) {
-    dir = 'UP';
-    type = 'BULLISH';
-  } else if (score < 0.5 && confPercent >= 90) {
-    dir = 'DOWN';
-    type = 'BEARISH';
-  } else {
-    return { isSignal: false };
-  }
-
-  // 5. 3 of 3 consensus: Kev-4b and Span-01 must BOTH agree with Jev's direction
-  const pKev = record?.predictions?.kev;
-  const pSpan = record?.predictions?.span;
-
-  if (!pKev || !pSpan) {
-    return { isSignal: false };
-  }
-
-  const kevDir = (pKev.direction || '').toUpperCase();
-  const spanDir = (pSpan.direction || '').toUpperCase();
-
-  if (kevDir !== dir || spanDir !== dir) {
-    return { isSignal: false };
-  }
-
+/**
+ * Does this record trigger an alert under a frozen strategy (default v2)? It is decided by the same engine as the Cloud
+ * Analysis backtest and the bot: the record, together with the earlier rows of its market hour (`priorRows`), is run
+ * through the strategy's rule, and the record alerts only if it is the trade that rule picks for the hour. So "first
+ * signal of the hour", "3 of 3 agree", the Solar filter, "skip flipped hours" and the minute window all mean what they
+ * mean everywhere else.
+ */
+export function evaluateJevRecordSignal(record: any, strategy: FrozenStrategy = FROZEN_STRATEGY, priorRows: SnapshotRow[] = []): JevSignalResult {
+  const filename = String(record?.filename || '__current__');
+  const current = forwardSnapshotRow(filename, record);
+  const rows = [...priorRows.filter(r => r.filename !== filename), current];
+  const trade = buildTrades(filterBaseRows(rows, strategy.rule), strategy.rule).find(t => t.row.filename === filename);
+  if (!trade) return { isSignal: false };
+  const coin = String(record?.coin || trade.coin || 'BTC').toLowerCase();
   const marketSlug = record?.cards?.['1h']?.slug || '';
-  const hourKey = marketSlug ? `btc_hour_${marketSlug}` : `btc_hour_${date}_${hour}`;
-
   return {
     isSignal: true,
-    type,
-    score,
-    confidence: Math.round(confPercent),
-    direction: dir,
-    rule: 'BTC · Jev + Kev + Span all agree · first signal after minute 31 of the hour',
-    hourKey,
-    minute,
-    hour: hour ?? undefined,
-    date,
+    type: trade.dir === 'UP' ? 'BULLISH' : 'BEARISH',
+    score: trade.modelScore,
+    confidence: trade.modelConf,
+    direction: trade.dir,
+    rule: strategy.name,
+    hourKey: marketSlug ? `${coin}_hour_${marketSlug}` : `${coin}_hour_${trade.date}_${trade.hour}`,
+    minute: trade.minute,
+    hour: trade.hour,
+    date: trade.date,
   };
 }
 
@@ -279,6 +249,7 @@ export function formatTelegramSignalMessage(
   record: any,
   filename: string,
   signal: { type: 'BULLISH' | 'BEARISH'; score: number; confidence: number; direction?: string; minute?: number; hour?: number },
+  strategy: FrozenStrategy,
   spotPriceOverride?: number | null,
   openPriceOverride?: number | null
 ): string {
@@ -289,8 +260,8 @@ export function formatTelegramSignalMessage(
     ? 'تیک آبی (سیگنال صعودی / BUY UP)'
     : 'تیک قرمز (سیگنال نزولی / BUY DOWN)';
 
-  const coin = 'BTC';
-  const coinLabel = 'Bitcoin';
+  const coin = String(record.coin || 'BTC').toUpperCase();
+  const coinLabel = record.coin_label || (coin === 'BTC' ? 'Bitcoin' : coin);
   const p = record.prediction || record.predictions?.jev || {};
   const cards = record.cards || {};
   const fv = record.fair_values || {};
@@ -322,7 +293,7 @@ export function formatTelegramSignalMessage(
       : null;
 
   // Build price comparison block
-  let priceBlock = `💵 <b>قیمت لحظه‌ای بیت‌کوین:</b> <code>$${formatCoinPrice(spotPrice)}</code>\n`;
+  let priceBlock = `💵 <b>قیمت لحظه‌ای ${coin === 'BTC' ? 'بیت‌کوین' : coinLabel}:</b> <code>$${formatCoinPrice(spotPrice)}</code>\n`;
   if (openPrice != null && openPrice > 0) {
     priceBlock += `🎯 <b>قیمت مبنا (Price To Beat / Open):</b> <code>$${formatCoinPrice(openPrice)}</code>\n`;
     if (spotPrice != null && spotPrice > 0) {
@@ -378,7 +349,7 @@ export function formatTelegramSignalMessage(
 
   return (
     `${headerIcon} <b>هشدار سیگنال معاملاتی — ${signalTitle}</b>\n\n` +
-    `🎯 <b>استراتژی:</b> <code>BTC · اجماع ۳ مدل (Jev+Kev+Span) · اولین سیگنال بعد از ۳۱</code>\n` +
+    `🎯 <b>استراتژی:</b> <code>${alertStrategyLabel(strategy)}</code>\n` +
     `⚡ <b>اقدام پیشنهادی:</b> <b>${actionWord}</b>\n` +
     `⏱️ <b>زمان سیگنال:</b> <b>${minuteStr}</b> ${hourStr ? `از ${hourStr}` : ''} (ET)\n\n` +
     `🪙 <b>ارز:</b> <b>${coinLabel} (${coin})</b>\n` +
@@ -402,7 +373,8 @@ export async function checkAndSendJevSignalAlert(
   filename: string
 ): Promise<{ sent: boolean; reason?: string }> {
   try {
-    const signal = evaluateJevRecordSignal(record);
+    const strategy = alertStrategy();
+    const signal = evaluateJevRecordSignal(record, strategy, readSameHourRows(record, filename));
     if (!signal.isSignal || !signal.type || signal.score == null || signal.confidence == null) {
       return { sent: false, reason: 'Does not match strategy criteria' };
     }
@@ -463,6 +435,7 @@ export async function checkAndSendJevSignalAlert(
         minute: signal.minute,
         hour: signal.hour,
       },
+      strategy,
       spotPrice,
       openPrice
     );
