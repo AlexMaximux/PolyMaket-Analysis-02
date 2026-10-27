@@ -61,7 +61,7 @@ describe('callMultiModelDecisions', () => {
     applySettingChanges({ 'openrouter.apiKey': 'sk-test-0123456789', 'jev.models': { jev: false, kev: false, span: false, solar: false, tev: true, mercury: true, liquid: true } }, db);
     const r = await callMultiModelDecisions({ coin: 'btc', coin_label: 'Bitcoin', cards: {}, fair_values: {} });
     const called = (global.fetch as any).mock.calls.map(([, init]: [string, { body: string }]) => JSON.parse(init.body).model);
-    expect(called.sort()).toEqual(['inception/mercury-decide:free', 'liquid/d1', 'togethercomputer/tev1-4b-experimental']);
+    expect(called.sort()).toEqual(['inception/mercury-decide', 'liquid/d1', 'togethercomputer/tev1-4b-experimental']);
     expect(r.tev).toMatchObject({ direction: 'UP', score: 3.2, prob_up: 90 });
     expect(r.mercury).toMatchObject({ direction: 'UP', score: 3.2, prob_up: 90 });
     expect(r.liquid).toMatchObject({ direction: 'UP', score: 3.2, prob_up: 90 });

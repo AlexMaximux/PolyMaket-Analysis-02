@@ -257,7 +257,7 @@ export async function callJevDecision(snapshotData: any, apiKey?: string) {
 export const KEV_MODEL = 'jaredpalmer/kev-4b';
 export const SOLAR_MODEL = 'upstage/solar-decide';
 export const TEV_MODEL = 'togethercomputer/tev1-4b-experimental';
-export const MERCURY_MODEL = 'inception/mercury-decide:free';
+export const MERCURY_MODEL = 'inception/mercury-decide';
 export const LIQUID_MODEL = 'liquid/d1';
 
 export const callKevDecision = (snapshotData: any, apiKey?: string) => callStandardDecision(KEV_MODEL, 'Kev', snapshotData, apiKey);
