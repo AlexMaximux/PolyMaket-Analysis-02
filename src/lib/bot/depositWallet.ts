@@ -1,4 +1,4 @@
-import { createSecureClient, WalletType, type SignedOrder } from '@polymarket/client';
+import { createSecureClient, production, WalletType, type SignedOrder } from '@polymarket/client';
 import { createBuilderApiKey } from '@polymarket/client/actions';
 import { fetchBalanceAllowance } from '@polymarket/client/actions';
 import { AssetType } from '@polymarket/bindings/clob';
@@ -8,6 +8,8 @@ import { hashTypedData, http } from 'viem';
 import { polygon } from 'viem/chains';
 import { applySettingChanges, getSetting } from '../settings';
 import { getBotWalletConfig } from './live';
+
+export const DEFAULT_POLYGON_RPC = 'https://polygon-bor-rpc.publicnode.com';
 
 export class DepositWalletError extends Error {}
 
@@ -24,14 +26,17 @@ export async function createDepositWalletClient(options: { provisionBuilder?: bo
   if (cfg.walletType !== 'DEPOSIT_WALLET' || !cfg.isConfigured || !cfg.address || !cfg.signerAddress) {
     throw new DepositWalletError('نوع کیف پول باید DEPOSIT_WALLET و آدرس B تنظیم شده باشد.');
   }
+  const rpcUrl = getSetting('bot.rpcUrl') || DEFAULT_POLYGON_RPC;
+  const environment = { ...production, rpc: rpcUrl };
   const signer = privateKey(cfg.privateKey, {
     chain: polygon,
-    transport: http(getSetting('bot.rpcUrl') || 'https://polygon-rpc.com', { timeout: 15_000, retryCount: 0 }),
+    transport: http(rpcUrl, { timeout: 15_000, retryCount: 0 }),
   });
   const existingBuilder = savedBuilderCredentials();
   let client = await createSecureClient({
     signer,
     wallet: cfg.address,
+    environment,
     ...(existingBuilder ? { apiKey: builderApiKey(existingBuilder) } : {}),
   });
   if (client.account.walletType !== WalletType.DEPOSIT_WALLET ||
@@ -50,6 +55,7 @@ export async function createDepositWalletClient(options: { provisionBuilder?: bo
     client = await createSecureClient({
       signer,
       wallet: cfg.address,
+      environment,
       credentials: client.credentials,
       apiKey: builderApiKey(created),
     });

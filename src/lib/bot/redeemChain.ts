@@ -59,7 +59,7 @@ export function createRedemptionChain() {
   const cfg = getBotWalletConfig();
   if (!cfg.isConfigured || !cfg.address) throw new RedemptionError('کیف پول Redeem تنظیم نشده است.');
   const account = privateKeyToAccount((cfg.privateKey.startsWith('0x') ? cfg.privateKey : `0x${cfg.privateKey}`) as Hex);
-  const transport = http(getSetting('bot.rpcUrl') || 'https://polygon-rpc.com', { timeout: 15_000, retryCount: 0 });
+  const transport = http(getSetting('bot.rpcUrl') || 'https://polygon-bor-rpc.publicnode.com', { timeout: 15_000, retryCount: 0 });
   const publicClient = createPublicClient({ chain: polygon, transport });
   const walletClient = createWalletClient({ account, chain: polygon, transport });
   const holder = cfg.address as Address;

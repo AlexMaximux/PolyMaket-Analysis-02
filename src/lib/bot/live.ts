@@ -27,7 +27,7 @@ export async function createLiveClient() {
   const w = getBotWalletConfig();
   if (!w.isConfigured) throw new Error('کیف پول معتبر تنظیم نشده است.');
   const account = privateKeyToAccount((w.privateKey.startsWith('0x') ? w.privateKey : `0x${w.privateKey}`) as `0x${string}`);
-  const wallet = createWalletClient({ account, chain: polygon, transport: http(getSetting('bot.rpcUrl') || 'https://polygon-rpc.com') });
+  const wallet = createWalletClient({ account, chain: polygon, transport: http(getSetting('bot.rpcUrl') || 'https://polygon-bor-rpc.publicnode.com') });
   const sig = w.walletType === 'EOA' ? SignatureType.EOA : w.walletType === 'POLY_PROXY' ? SignatureType.POLY_PROXY : SignatureType.POLY_GNOSIS_SAFE;
   const funder = w.walletType === 'EOA' ? undefined : w.proxyAddress;
   const base = new ClobClient(CLOB_HOST, 137, wallet, undefined, sig, funder);
