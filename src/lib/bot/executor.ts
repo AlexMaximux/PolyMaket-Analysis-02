@@ -25,9 +25,9 @@ export function describeOrderError(e: unknown): { noFill: boolean; text: string 
   const raw = e instanceof Error ? e.message : String(e);
   const meta = e as { name?: string; status?: unknown; code?: unknown };
   const text = raw
-    .replace(/(secret|passphrase|api[-_ ]?key|authorization|bearer|signature|private)[^,;\n]*/gi, '$1=[hidden]')
+    .replace(/(secret|passphrase|api[-_ ]?key|authorization|bearer|signature|private|credentials)[^,;\n]*/gi, '$1=[hidden]')
     .replace(/0x[0-9a-fA-F]{40,}/g, '0x…')
-    .slice(0, 200);
+    .slice(0, 240);
   return { noFill: NO_FILL_RE.test(raw), text: [meta.name ?? 'Error', meta.status ?? meta.code ?? '', text].filter(Boolean).join(' ') };
 }
 
@@ -181,7 +181,7 @@ function resultFor(signal: SignalRequest, row?: BotRequest, error?: string): Tra
     amountUsd: row?.amount ?? limits.perTrade, totalSpentAfter: total, maxBudget: limits.maxBudget,
     remainingBudget: Math.max(0, limits.maxBudget - total - reservedBudget(simulated)),
     timestamp: row?.created_at ?? Date.now(), error, status: 'FAILED', attempts: row?.attempts ?? 0,
-    slug: row?.slug ?? undefined, tokenId: row?.token_id ?? undefined, orderId: row?.order_id ?? undefined,
+    slug: row?.slug ?? signal.expectedMarketSlug ?? undefined, tokenId: row?.token_id ?? undefined, orderId: row?.order_id ?? undefined,
   };
 }
 function settle(signal: SignalRequest, row: BotRequest, result: TradeResult): TradeResult {
@@ -409,7 +409,9 @@ async function placeLimitOrder(signal: SignalRequest, row: BotRequest, market: A
   if (!response.ok) {
     markRejected(row.request_id);
     row = findRequest(row.request_id)!;
-    return settle(signal, row, { ...result, orderId: undefined, error: 'CLOB سفارش لیمیت را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.' });
+    const rej = response as { code?: string; status?: unknown; error?: string; message?: string };
+    const clobDetail = [rej.code, rej.status, rej.error || rej.message].filter(Boolean).join(' · ');
+    return settle(signal, row, { ...result, orderId: undefined, error: `CLOB سفارش لیمیت را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.${clobDetail ? `\nجزئیات CLOB: ${clobDetail}` : ''}` });
   }
   return await reconcileAfterUnknown(signal, row);
 }
@@ -509,7 +511,7 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
           if (!info.noFill) return await reconcileAfterUnknown(signal, row);
           markRejected(row.request_id);
           row = findRequest(row.request_id)!;
-          result = { ...result, orderId: undefined, error: 'در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد.' };
+          result = { ...result, orderId: undefined, error: `در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد. (تلاش ${attempt}/${maxAttempts} · سقف قیمت: ${(cap * 100).toFixed(1)}¢ · ${info.text})` };
           continue;
         }
         if (response.ok && response.status === 'matched' && response.orderId === orderId &&
@@ -521,13 +523,15 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
         if (!response.ok && response.code === 'unmatched') {
           markRejected(row.request_id);
           row = findRequest(row.request_id)!;
-          result = { ...result, orderId: undefined, error: 'در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد.' };
+          result = { ...result, orderId: undefined, error: `در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد. (تلاش ${attempt}/${maxAttempts} · سقف قیمت: ${(cap * 100).toFixed(1)}¢)` };
           continue;
         }
         if (!response.ok) {
           markRejected(row.request_id);
           row = findRequest(row.request_id)!;
-          return settle(signal, row, { ...result, orderId: undefined, error: 'CLOB سفارش را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.' });
+          const rej = response as { code?: string; status?: unknown; error?: string; message?: string };
+          const clobDetail = [rej.code, rej.status, rej.error || rej.message].filter(Boolean).join(' · ');
+          return settle(signal, row, { ...result, orderId: undefined, error: `CLOB سفارش را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.${clobDetail ? `\nجزئیات CLOB: ${clobDetail}` : ''}` });
         }
         console.warn(`[TRADE] attempt ${attempt}/${maxAttempts} ambiguous response: ok=${String((response as { ok?: unknown }).ok)} status=${String((response as { status?: unknown }).status)} code=${String((response as { code?: unknown }).code)}`);
         return await reconcileAfterUnknown(signal, row);
@@ -554,7 +558,7 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
         if (!info.noFill) return await reconcileAfterUnknown(signal, row);
         markRejected(row.request_id);
         row = findRequest(row.request_id)!;
-        result = { ...result, orderId: undefined, error: 'در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد.' };
+        result = { ...result, orderId: undefined, error: `در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد. (تلاش ${attempt}/${maxAttempts} · سقف قیمت: ${(cap * 100).toFixed(1)}¢ · ${info.text})` };
         continue;
       }
       if (response?.success === true && response.status === 'matched' && response.orderID === row.order_id && validFill(Number(response.makingAmount), Number(response.takingAmount), row)) {
@@ -567,14 +571,15 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
       if (response?.success !== true && !response?.orderID && noFill && (!response.status || (Number(response.status) >= 400 && Number(response.status) < 500))) {
         markRejected(row.request_id);
         row = findRequest(row.request_id)!;
-        result = { ...result, orderId: undefined, error: 'در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد.' };
+        result = { ...result, orderId: undefined, error: `در قیمت اولیه نقدینگی کافی نبود؛ خریدی انجام نشد. (تلاش ${attempt}/${maxAttempts} · سقف قیمت: ${(cap * 100).toFixed(1)}¢)` };
         continue;
       }
       // Definite validation/auth rejection: stop; all other responses are ambiguous.
       if (!response?.orderID && response?.success !== true && [400, 401, 403, 422].includes(Number(response?.status)) && error && !/duplicate|delayed|timeout/i.test(error)) {
         markRejected(row.request_id);
         row = findRequest(row.request_id)!;
-        return settle(signal, row, { ...result, orderId: undefined, error: 'CLOB سفارش را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.' });
+        const clobDetail = [response?.status, error].filter(Boolean).join(' · ');
+        return settle(signal, row, { ...result, orderId: undefined, error: `CLOB سفارش را رد کرد؛ موجودی، مجوز خرج‌کردن و تنظیمات کیف پول را بررسی کنید.${clobDetail ? `\nجزئیات CLOB: ${clobDetail}` : ''}` });
       }
       return await reconcileAfterUnknown(signal, row);
     }
@@ -583,8 +588,11 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
     row = findRequest(row.request_id)!;
     if (row.state === 'RESTING') return await advanceResting(signal, row);
     if (['SUBMITTING', 'UNKNOWN'].includes(row.state)) return unknown(signal, row);
-    // Preparation errors cannot have submitted an order. Do not surface raw SDK error objects.
-    const message = e instanceof Error && /[\u0600-\u06ff]/.test(e.message) ? e.message : 'آماده‌سازی یا ثبت معامله ناموفق بود؛ سفارشی ارسال نشد.';
+    const detail = describeOrderError(e).text;
+    console.error(`[TRADE] preparation/order failed (${row.request_id}): ${detail}`);
+    const message = e instanceof Error && /[\u0600-\u06ff]/.test(e.message)
+      ? e.message
+      : `آماده‌سازی یا ثبت معامله ناموفق بود؛ سفارشی ارسال نشد.\nجزئیات فنی: ${detail}`;
     return settle(signal, row, { ...result, error: message });
   }
 }

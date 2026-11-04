@@ -21,7 +21,9 @@ export function collectNotifications() {
   for (const row of rows) {
     const r = JSON.parse(row.result!) as TradeResult;
     const title = row.state === 'FILLED' ? '✅ خرید واقعی تأیید شد' : row.state === 'SIMULATED' ? '🧪 خرید آزمایشی؛ بدون خرج پول' : row.state === 'UNKNOWN' ? '⏳ وضعیت خرید نامشخص؛ سفارش جدید ارسال نمی‌شود' : '❌ خرید انجام نشد';
-    enqueueNotification(`purchase:${row.request_id}:${row.state}`, `${title}${!r.success && r.error ? `\n${r.error}` : ''}\nBTC 1H ${r.outcome}\n${r.slug || ''}\nمبلغ: $${r.amountUsd}\nسهم: ${r.shares ?? '—'}\nقیمت: ${r.price ?? '—'}\nسفارش: ${r.orderId || '—'}\nشناسه: ${row.request_id}`);
+    const slug = r.slug || row.slug || '';
+    const attemptsLine = !r.success ? `\nتلاش‌ها: ${r.attempts ?? row.attempts ?? 0}` : '';
+    enqueueNotification(`purchase:${row.request_id}:${row.state}`, `${title}${!r.success && r.error ? `\nعلت خطا: ${r.error}` : ''}\nBTC 1H ${r.outcome}\n${slug}\nمبلغ: $${r.amountUsd}\nسهم: ${r.shares ?? '—'}\nقیمت: ${r.price ?? '—'}\nسفارش: ${r.orderId || '—'}${attemptsLine}\nشناسه: ${row.request_id}`);
   }
   const redemptions = getDb().prepare("SELECT * FROM bot_redemptions WHERE state='CONFIRMED'").all() as Redemption[];
   for (const row of redemptions) {

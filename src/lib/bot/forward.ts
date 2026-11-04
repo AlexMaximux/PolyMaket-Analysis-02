@@ -79,8 +79,8 @@ export async function runForwardCycle(
   if (result.status === 'PENDING' && result.price) {
     enqueueNotification(`resting:${signal.requestId}`, `🕒 سفارش لیمیت روی دفتر سفارش گذاشته شد؛ هنوز خرید انجام نشده\nBTC 1H ${result.outcome}\nقیمت لیمیت: ${(result.price * 100).toFixed(0)}¢ · سهم: ${result.shares ?? '—'}\nتا دقیقهٔ ۵۷ ساعت منتظر می‌ماند و بعد لغو می‌شود.\n${signal.requestId}`);
   }
-  console.log(`[TRADE] ${result.status || (result.success ? 'FILLED' : 'FAILED')} · BTC 1H ${result.outcome || signal.outcome} · $${result.amountUsd ?? '—'} · attempts=${result.attempts ?? 0} · ${result.requestId || signal.requestId}`);
-  if (!result.success && !findRequest(signal.requestId!)) enqueueNotification(`blocked:${signal.requestId}`, `⛔ سیگنال forward اجرا نشد؛ وضعیت بات و بودجه را بررسی کنید.\n${signal.expectedMarketSlug}\n${signal.requestId}`);
+  console.log(`[TRADE] ${result.status || (result.success ? 'FILLED' : 'FAILED')} · BTC 1H ${result.outcome || signal.outcome} · $${result.amountUsd ?? '—'} · attempts=${result.attempts ?? 0} · ${result.requestId || signal.requestId}${!result.success && result.error ? ` · error: ${result.error}` : ''}`);
+  if (!result.success && !findRequest(signal.requestId!)) enqueueNotification(`blocked:${signal.requestId}`, `⛔ سیگنال forward اجرا نشد؛ وضعیت بات و بودجه را بررسی کنید.${result.error ? `\nعلت خطا: ${result.error}` : ''}\n${signal.expectedMarketSlug}\n${signal.requestId}`);
 }
 export function forwardStatus() {
   const strategy = botStrategy();
