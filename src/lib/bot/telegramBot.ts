@@ -10,7 +10,7 @@ import {
   setBotSetting,
 } from './db';
 import { getSetting, applySettingChanges } from '../settings';
-import type { TradeResult } from './types';
+import type { BotStatus, TradeResult } from './types';
 import { walletBalanceLine, withBalanceLine } from './balance';
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -96,6 +96,16 @@ export function formatTradeNotification(res: TradeResult): string {
   );
 }
 
+/** The /status line for the wallet's USDC balance. The bot reads a balance only for a Deposit Wallet. */
+export function statusBalanceLine(s: Pick<BotStatus, 'walletBalanceUsd' | 'walletConnection' | 'walletType'>): string {
+  if (s.walletConnection === 'NOT_CONFIGURED') return '• موجودی والت: —';
+  if (s.walletType !== 'DEPOSIT_WALLET') return '• موجودی والت: برای این نوع والت خوانده نمی‌شود';
+  if (s.walletConnection === 'CONNECTED' && s.walletBalanceUsd != null && Number.isFinite(s.walletBalanceUsd)) {
+    return `• 💼 موجودی والت: <b>$${s.walletBalanceUsd.toFixed(2)}</b> USDC`;
+  }
+  return '• 💼 موجودی والت: نامشخص (خواندن ممکن نشد)';
+}
+
 export async function formatStatusMessage(): Promise<string> {
   const status = await getBotStatus();
   const modeText = !getSetting('bot.enabled')
@@ -115,7 +125,8 @@ export async function formatStatusMessage(): Promise<string> {
   return (
     `<b>🤖 وضعیت ربات ترید Polymarket</b>\n\n` +
     `• حالت کاری: ${modeText}\n` +
-    `• آدرس والت: <code>${status.walletAddress || 'تنظیم نشده'}</code> (${status.walletType})\n\n` +
+    `• آدرس والت: <code>${status.walletAddress || 'تنظیم نشده'}</code> (${status.walletType})\n` +
+    `${statusBalanceLine(status)}\n\n` +
     `💰 <b>محدودیت‌های ریسک و سرمایه:</b>\n` +
     `• سقف کل بودجه مجاز: <b>$${status.maxTotalBudget.toFixed(2)}</b>\n` +
     `• کل هزینه شده تا الان: <b>$${status.totalSpent.toFixed(2)}</b>\n` +
