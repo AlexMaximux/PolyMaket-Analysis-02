@@ -14,7 +14,11 @@
     "backfill:models": "tsx scripts/backfill_models.ts",
     "backfill:cl": "tsx scripts/backfill_cl.ts",
     "ask:cl": "tsx scripts/ask_cl.ts",
-    "bot": "tsx scripts/bot.ts"
+    "bot": "tsx scripts/bot.ts",
+    "tfm:setup": "uv venv --python 3.12 tfm/.venv && uv pip install --python tfm/.venv/bin/python -r tfm/requirements.txt",
+    "tfm": "tfm/.venv/bin/python tfm/server.py",
+    "tfm:2.5": "TFM_MODEL=google/timesfm-2.5-200m-pytorch tfm/.venv/bin/python tfm/server.py",
+    "backfill:tfm": "tsx scripts/backfill_tfm.ts"
   },
   "dependencies": {
     "@polymarket/client": "^0.11.0",

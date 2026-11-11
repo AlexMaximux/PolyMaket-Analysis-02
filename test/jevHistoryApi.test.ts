@@ -9,6 +9,7 @@ vi.mock('@/lib/marketResolver', () => ({
 }));
 
 import { GET } from '@/app/api/jev/history/route';
+import { updateMarketResolutions } from '@/lib/marketResolver';
 
 const rec = (slug: string, time: string, extra: Record<string, unknown> = {}) => ({
   et_time: `2026-10-02 ${time} ET`, current_time_et: time, timestamp: `2026-10-02T1${time[1]}:${time.slice(3, 5)}:00.000Z`, coin: 'BTC',
@@ -40,6 +41,12 @@ describe('/api/jev/history', () => {
     }));
     w('cl', 'CL-btc_updown_2026-10-02_11-00-00_ET.json', rec('btc-hour-b', '11:00:00', { prediction: null, predictions: null, fair_values: { claude: 0.5 } }));
     w('cl', 'CL-eth_updown_2026-10-02_10-00-00_ET.json', rec('btc-hour-a', '10:00:00', { coin: 'ETH', fair_values: { claude: 0.6 } }));
+    // TimesFM forecast for the BTC snapshot only (the ETH one has none)
+    fs.mkdirSync(path.join(root, 'jev', 'tfm'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'jev', 'tfm', 'forecasts-timesfm-3.0.jsonl'), JSON.stringify({
+      file: 'btc_updown_2026-10-02_10-00-00_ET.json', coin: 'BTC', ts: '2026-10-02T14:00:00.000Z', model: 'm', context: 1024, last: 100,
+      h1: { open: 99, minutesLeft: 20, probUp: 0.8126, median: 100.05, q10: 99.5, q90: 100.6 }, m15: null, m5: null, source: 'backfill',
+    }) + '\n');
     vi.spyOn(process, 'cwd').mockReturnValue(root);
   });
   afterAll(() => {
@@ -76,10 +83,71 @@ describe('/api/jev/history', () => {
     expect((await get('?set=cl&coin=sol')).json.files).toEqual([]);
   });
 
+  it('view=lab omits only raw predictions and preserves flattened model, price, fair value and outcome fields', async () => {
+    for (const query of ['', 'set=cl&coin=btc']) {
+      const { json: full } = await get(query ? `?${query}` : '');
+      const { json: lab } = await get(`?${query ? `${query}&` : ''}view=lab`);
+      expect(lab.count).toBe(full.count);
+      expect(full.files[0]).toHaveProperty('predictions');
+      expect(lab.files[0]).not.toHaveProperty('predictions');
+      expect(lab.files).toEqual(full.files.map(({ predictions, ...row }: { predictions: unknown; [key: string]: unknown }) => row));
+      expect(lab.files[0]).toMatchObject({
+        kev_direction: query ? 'DOWN' : 'UP', span_direction: query ? 'DOWN' : 'UP', up_1h_num: 80,
+        fair_15m: 80, market_outcome: 'UP',
+      });
+    }
+  });
+
+  it('adds the TimesFM fields of the stored forecast to each row, matched by file name', async () => {
+    const { json } = await get();
+    expect(json.files[0]).toMatchObject({ tfm_prob_up: 81.3, tfm_direction: 'UP', tfm_score: 3.25, fair_tfm: 81.3 });
+  });
+
+  it('set=cl matches the forecast of the original file (CL- prefix removed); a snapshot without one has null fields', async () => {
+    const { json } = await get('?set=cl');
+    const btc = json.files.find((f: { filename: string }) => f.filename.startsWith('CL-btc'));
+    const eth = json.files.find((f: { filename: string }) => f.filename.startsWith('CL-eth'));
+    expect(btc).toMatchObject({ tfm_prob_up: 81.3, tfm_direction: 'UP', tfm_score: 3.25, fair_tfm: 81.3 });
+    expect(eth.tfm_prob_up).toBeNull();
+    expect(eth.fair_tfm).toBeNull();
+  });
+
+  it('view=lab keeps the TimesFM fields', async () => {
+    const { json } = await get('?view=lab');
+    expect(json.files[0].tfm_prob_up).toBe(81.3);
+  });
+
   it('file= reads from the CL folder only when set=cl, and never escapes the folder', async () => {
     const name = 'CL-btc_updown_2026-10-02_10-00-00_ET.json';
     expect((await get(`?set=cl&file=${name}`)).json.prediction.direction).toBe('DOWN');
+    expect((await get(`?set=cl&view=lab&file=${name}`)).json.predictions.jev.direction).toBe('DOWN');
     expect((await get(`?file=${name}`)).res.status).toBe(404);
     expect((await get(`?set=cl&file=../../../etc/passwd`)).res.status).toBe(404);
+  });
+});
+
+describe('/api/jev/history without a TimesFM store', () => {
+  let root: string;
+  beforeAll(() => {
+    // the first describe's vi.restoreAllMocks() also reset the mocked resolver
+    vi.mocked(updateMarketResolutions).mockResolvedValue(undefined as never);
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'hist-api-notfm-'));
+    fs.mkdirSync(path.join(root, 'jev', 'history'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'jev', 'history', 'btc_updown_2026-10-02_10-00-00_ET.json'), JSON.stringify(rec('btc-hour-a', '10:00:00')));
+    vi.spyOn(process, 'cwd').mockReturnValue(root);
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('answers 200 and gives every TimesFM field as null', async () => {
+    const { res, json } = await get();
+    expect(res.status).toBe(200);
+    expect(json.files).toHaveLength(1);
+    expect(json.files[0]).toMatchObject({
+      tfm_direction: null, tfm_score: null, tfm_prob_up: null, tfm_score_confidence: null, tfm_direction_confidence: null,
+      tfm_confidence: null, tfm_up_15m: null, tfm_up_5m: null, tfm_ret_1h: null, fair_tfm: null,
+    });
   });
 });

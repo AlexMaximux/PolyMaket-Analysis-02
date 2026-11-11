@@ -1,0 +1,38 @@
+.chart { min-width: 0; width: 100%; font-variant-numeric: tabular-nums; }
+.lane + .lane { margin-top: 12px; padding-top: 14px; border-top: 1px solid #2a292e; }
+.laneHeading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 6px; }
+.laneHeading h3 { margin: 0; color: #f2f2f3; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.laneHeading h3 > span { display: inline-block; color: #aaa6b0; font-size: 11px; margin-inline-start: 6px; font-weight: 400; }
+.legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px 12px; color: #c2bec8; font-size: 11px; }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chart svg { display: block; overflow: hidden; touch-action: pan-y; user-select: none; }
+.chart svg:focus-visible { outline: 1px solid #80b5e5; outline-offset: 2px; }
+.axis { fill: #b4b0ba; font: 11px var(--curve-latin, sans-serif); font-variant-numeric: tabular-nums; }
+.emptyLabel { fill: #aaa6b0; font-size: 12px; }
+.referenceLegend { display: flex; flex-wrap: wrap; gap: 5px 16px; color: #b4b0ba; font-size: 11px; margin-block: 3px 2px; }
+.referenceLegend > span { display: inline-flex; align-items: center; gap: 5px; }
+.referenceLegend i { width: 14px; border-top: 1px dashed #aaa5af; }
+.foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; color: #aaa6b0; font-size: 11px; margin-top: 10px; border-top: 1px solid #2a292e; padding-top: 10px; }
+.note { color: #aaa6b0; font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
+.empty { min-height: 170px; display: flex; align-items: center; justify-content: center; color: #b4b0ba; font-size: 13px; padding: 20px; text-align: center; }
+.navigator { width: 100%; min-width: 0; padding-top: 14px; border-top: 1px solid #2a292e; }
+.navigatorHeading { display: flex; justify-content: space-between; align-items: center; color: #c2bec8; font-size: 11px; margin-bottom: 8px; gap: 12px; }
+.navigatorHeading small { color: #aaa6b0; font-size: 11px; margin-inline-start: 10px; }
+.navigatorHeading button { cursor: pointer; border: 0; background: none; padding: 3px 0; color: #c2bec8; font: inherit; border-bottom: 1px solid #80b5e5; }
+.navigatorHeading button:disabled { color: #aaa6b0; cursor: default; border-bottom-color: transparent; }
+.navigator svg { display: block; background: #17161b; }
+.handles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 8px; }
+.handles label { min-width: 0; color: #b4b0ba; font-size: 11px; }
+.handles label > span { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.handles input { display: block; width: 100%; margin: 0; height: 28px; accent-color: #80b5e5; direction: ltr; cursor: ew-resize; }
+.handles input:focus-visible { outline: 1px solid #80b5e5; }
+.handles input:disabled { cursor: default; }
+@media (max-width: 540px) {
+  .laneHeading { gap: 8px; }
+  .legend { justify-content: flex-start; font-size: 11px; gap: 5px 10px; }
+  .lane + .lane { margin-top: 10px; padding-top: 12px; }
+  .handles { grid-template-columns: 1fr; gap: 3px; }
+  .handles input { height: 36px; }
+  .navigatorHeading { min-height: 34px; }
+  .navigatorHeading button { min-height: 34px; }
+}

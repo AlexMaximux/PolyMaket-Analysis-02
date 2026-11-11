@@ -39,6 +39,25 @@ Production: `npm run build`, then run `npm run supervisor` with `NODE_ENV=produc
 - `jev/history/*.json`: one record per coin every 5 minutes. This is the source of truth for the analysis pages and the bot.
 - `ticks/updown-*.jsonl`: per-minute Up/Down ticks.
 
+## TimesFM forecast (TFM)
+
+Google's TimesFM time-series model forecasts the next hour of each coin's price from its 1-minute Binance bars. From that forecast the app derives a closing price with a 10-90% band and P(Up) for the 5-minute, 15-minute and 1-hour Up/Down markets. It is an extra input to test, not a trading signal: the bot, the frozen strategies and the alerts do not use it.
+
+```bash
+npm run tfm:setup                 # once: Python 3.12 venv in tfm/.venv with timesfm and torch
+npm run tfm                       # starts the model service on http://127.0.0.1:8002 (TimesFM 3.0 by default)
+npm run tfm:2.5                   # starts the model service with TimesFM 2.5
+npm run backfill:tfm -- --coin=btc --limit=40
+```
+
+`backfill:tfm` forecasts the history snapshots that have no forecast yet for the active model, using only prices that existed at each snapshot's time. Flags: `--coin=btc,eth` (default every coin), `--since=YYYY-MM-DD` (file-name date, inclusive), `--limit=N` (snapshots forecast in this run), `--batch=16` (series per call, 1-64), `--force` (redo snapshots that are already stored). It needs the service to be running, prints progress every 500 records and can be stopped and started again: it continues where it ended. While the service is up, `scripts/jev.ts` also forecasts every new snapshot; with the service down the collector is unaffected.
+
+- `/updown` has a **TFM Forecast** tab with the live forecast, refresh controls (30 s / 1 min), and an hour track chart.
+- Forecasts are stored per model in `jev/tfm/forecasts-<key>.jsonl` (e.g. `forecasts-timesfm-3.0.jsonl`, append-only; the app reads the active model's store; run `npm run backfill:tfm` after switching). Live track points are written to `jev/tfm/live/<coin>-<YYYY-MM-DD>.jsonl`. Nothing in `jev/history` is changed.
+- Model selection and configuration: `TFM_MODEL` (`google/timesfm-3.0-pytorch` by default, or `google/timesfm-2.5-200m-pytorch` / model keys `timesfm-3.0`, `timesfm-2.5`) and `TFM_DEVICE` (`cpu` by default).
+- The service is local only (127.0.0.1:8002) and is not meant for the small production server: it needs far more memory than that machine has. Without it every page and script works as before; the TimesFM fields are just empty.
+- Licences: TimesFM 3.0 weights (`google/timesfm-3.0-pytorch`) are under a non-commercial, non-production licence. TimesFM 2.5 weights (`google/timesfm-2.5-200m-pytorch`) are licensed under Apache-2.0.
+
 ## Safety
 
 - The trading bot is off by default and starts in simulation mode; it never autostarts.

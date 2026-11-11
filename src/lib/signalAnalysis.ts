@@ -6,7 +6,7 @@ import { compileFilters, type FilterGroup } from "./fieldFilters";
 import { tradeFilterFields } from "./snapshotFilterFields";
 
 export type Dir = "UP" | "DOWN";
-export type ModelSource = "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "liquid" | "avg";
+export type ModelSource = "jev" | "kev" | "span" | "solar" | "tev" | "mercury" | "liquid" | "tfm" | "avg";
 export type ConsensusRule = "none" | "2of3" | "3of3";
 export type DedupeMode = "all" | "firstPerHour" | "firstPerHourDir";
 // afterFilters: first snapshot of the hour that passes every filter becomes the trade.
@@ -51,6 +51,12 @@ export interface SnapshotRow {
   liquid_confidence?: number | null;
   liquid_score_confidence?: number | null;
   liquid_direction_confidence?: number | null;
+  tfm_direction?: Dir | null;
+  tfm_score?: number | null;
+  tfm_confidence?: number | null;
+  tfm_score_confidence?: number | null;
+  tfm_direction_confidence?: number | null;
+  tfm_prob_up?: number | null;
   consensus_agreement?: number | null;
   up_1h_num?: number | null;
   market_slug?: string | null;
@@ -78,6 +84,9 @@ export interface AnalysisConfig {
   // point the same way as the signal. Rows recorded before Solar existed have no direction and fail it.
   solarAgrees: boolean;
   solarMinConf: number; // Solar score confidence, %; 0 = off. Rows without a Solar prediction fail when > 0.
+  // TimesFM as a confirmer of any model's signal. Rows without a TimesFM forecast fail whenever either check is on.
+  tfmMinProb: number; // TimesFM P(side traded) must be >= this, in %. 0 = off. 50 = "TimesFM agrees".
+  tfmMinEdge: number; // TimesFM P(side traded) minus the quoted price of that side, in cents, must be >= this. -100 = off.
   // Skip the hour once a signal pointing the other way already appeared in it. Earlier signals count at any
   // confidence (the min-conf thresholds are ignored for this check): even a weak opposite signal shows the hour flipped.
   noPriorOpposite: boolean;
@@ -113,6 +122,8 @@ export const DEFAULT_ANALYSIS_CONFIG: AnalysisConfig = {
   consensus: "none",
   solarAgrees: false,
   solarMinConf: 0,
+  tfmMinProb: 0,
+  tfmMinEdge: -100,
   noPriorOpposite: false,
   minMinute: 0,
   maxMinute: 59,
@@ -245,10 +256,32 @@ export const FROZEN_STRATEGY_5: FrozenStrategy = {
   checkpoints: [10, 20, 30, 50],
 };
 
+// A seventh parallel forward test, set by the user on 2026-11-10 (the id s6 is taken by the experiment branch): strategy 1
+// (v2) plus a TimesFM 3.0 confirmer. The first snapshot of the hour where v2's signal fires AND TimesFM's probability for
+// the side bought is at least that side's quoted price (TFM edge >= 0). Picked after trying about 30 TimesFM conditions on
+// the same 47 days of BTC data (in-sample, before slippage: 776 trades, +2.4c per share, 94.8% won at 91.9c; +1.3c with
+// 1.5c slippage), so only the forward window counts. Paper only: the bot does not trade it, and it is not an alert option
+// (alert rows carry no TimesFM fields). Rows without a TimesFM forecast cannot trade, so the collector needs the local
+// TimesFM service (or `npm run backfill:tfm` afterwards: forecasts use only prices from before each snapshot).
+// Frozen on the top of an hour, so no forward row was seen.
+export const FROZEN_STRATEGY_7: FrozenStrategy = {
+  id: "s7",
+  name: "BTC · Jev + Kev + Span all agree · minute 32+ · TimesFM probability of the side ≥ its price",
+  note: "Strategy 1 (v2) plus one filter: TimesFM 3.0's probability for the side bought (tfm_prob_up for UP, 100 minus it for DOWN) must be at least the quoted price of that side (edge ≥ 0 cents). After filters: the first snapshot of the hour that passes both v2 and the TimesFM condition is the trade, so a later snapshot can still qualify. In-sample on Sep 24 - Nov 10: v2 1,012 trades +0.7c per share; with the filter 776 trades +2.4c (t 3.1), positive in both halves, before slippage. Only the forward window counts. Rows without a TimesFM forecast cannot trade.",
+  frozenAt: "2026-11-11T04:00:00.000Z", // 23:00 ET Nov 10
+  frozenUntil: null,
+  rule: baseRule({ minMinute: 32, tfmMinEdge: 0 }),
+  checkpoints: [10, 20, 30, 50],
+};
+
 // Every frozen strategy by id. The Jev alert (setting jev.alertStrategy) can follow any of them; the bot trades v2 or s5.
+// s7 is not listed: its rule needs TimesFM fields that alert rows do not carry, so an alert on it would never fire.
 export const STRATEGIES_BY_ID: Record<string, FrozenStrategy> = {
   v1: STRATEGY_HISTORY[0], v2: FROZEN_STRATEGY, s2: FROZEN_STRATEGY_2, s3: FROZEN_STRATEGY_3, s4: FROZEN_STRATEGY_4, s5: FROZEN_STRATEGY_5,
 };
+
+// The ready-made rules the Strategy Lab offers as a start: every frozen strategy, including those that cannot drive an alert.
+export const LAB_PRESETS: Record<string, FrozenStrategy> = { ...STRATEGIES_BY_ID, s7: FROZEN_STRATEGY_7 };
 
 export interface Trade {
   row: SnapshotRow;
@@ -265,6 +298,8 @@ export interface Trade {
   priorOpposite: boolean; // an opposite-direction signal (any confidence) appeared earlier in this market hour
   quote: number | null; // quoted price of the chosen side, 0-1
   entry: number | null; // quote + slippage, 0-1
+  tfmProb: number | null; // TimesFM P(side traded), 0-100, one decimal; null without a forecast
+  tfmEdge: number | null; // tfmProb - quote * 100, two decimals; null when either is missing
   status: TradeStatus;
   pnl: number; // 0 while pending
 }
@@ -342,6 +377,11 @@ export function detectSignal(
     conf = cfg.confidenceType === "direction"
       ? r.liquid_direction_confidence ?? r.liquid_confidence
       : r.liquid_score_confidence ?? r.liquid_confidence;
+  } else if (cfg.model === "tfm") {
+    score = r.tfm_score;
+    conf = cfg.confidenceType === "direction"
+      ? r.tfm_direction_confidence ?? r.tfm_confidence
+      : r.tfm_score_confidence ?? r.tfm_confidence;
   } else if (cfg.model === "avg") {
     const scores = [r.score, r.kev_score, r.span_score].filter((s): s is number => s != null);
     score = scores.length ? Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)) : null;
@@ -416,6 +456,11 @@ function buildCandidate(r: SnapshotRow, cfg: AnalysisConfig, priorDirs: Set<Dir>
   const quote = sidePrice(r, sig.dir);
   const entry = quote == null ? null : Math.min(0.999, quote + cfg.slippageCents / 100);
   const status = tradeStatus(r, sig.dir);
+  const tfmUp = r.tfm_prob_up != null && Number.isFinite(r.tfm_prob_up) ? r.tfm_prob_up : null;
+  const tfmSide = tfmUp == null ? null : sig.dir === "UP" ? tfmUp : 100 - tfmUp;
+  const tfmProb = tfmSide == null ? null : Number(tfmSide.toFixed(1));
+  // The edge uses the rounded tfmProb, so the two numbers on a trade always agree with each other.
+  const tfmEdge = tfmProb == null || quote == null ? null : Number((tfmProb - quote * 100).toFixed(2));
   return {
     row: r,
     coin: (r.coin || "").toUpperCase(),
@@ -431,6 +476,8 @@ function buildCandidate(r: SnapshotRow, cfg: AnalysisConfig, priorDirs: Set<Dir>
     priorOpposite: priorDirs.has(sig.dir === "UP" ? "DOWN" : "UP"),
     quote,
     entry,
+    tfmProb,
+    tfmEdge,
     status,
     pnl: tradePnl(status, entry, cfg.stake),
   };
@@ -445,6 +492,8 @@ function passesFilters(t: Trade, cfg: AnalysisConfig, fieldTest: ((t: Trade) => 
   if (cfg.consensus === "3of3" && t.agreeCount < 3) return false;
   if (cfg.solarAgrees && t.row.solar_direction !== t.dir) return false;
   if (cfg.solarMinConf > 0 && !((t.row.solar_score_confidence ?? -1) >= cfg.solarMinConf)) return false;
+  if (cfg.tfmMinProb > 0 && !(t.tfmProb != null && t.tfmProb >= cfg.tfmMinProb)) return false;
+  if (cfg.tfmMinEdge > -100 && !(t.tfmEdge != null && t.tfmEdge >= cfg.tfmMinEdge)) return false;
   if (cfg.noPriorOpposite && t.priorOpposite) return false;
   if (t.minute < cfg.minMinute || t.minute > cfg.maxMinute) return false;
   const priceFilterOn = cfg.minEntry > 0 || cfg.maxEntry < 100;

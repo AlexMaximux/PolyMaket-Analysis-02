@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import TfmForecastTab from "@/components/updown/TfmForecastTab";
 import { Bitcoin, RefreshCw, Clock, Activity, Zap, ChevronRight, Sparkles, FileText, Download, Eye, ChevronDown, BarChart3 } from "lucide-react";
 
 const COINS = [
@@ -44,6 +45,15 @@ function pct(v: number | null | undefined) {
 
 export default function UpDownPage() {
   const [coin, setCoin] = useState("btc");
+  const [tab, setTab] = useState<"overview" | "tfm">("overview");
+  useEffect(() => {
+    const t = setTimeout(() => { if (location.hash === "#tfm") setTab("tfm"); }, 0);
+    return () => clearTimeout(t);
+  }, []);
+  const pickTab = (next: "overview" | "tfm") => {
+    setTab(next);
+    history.replaceState(null, "", next === "tfm" ? "#tfm" : location.pathname + location.search);
+  };
   const [sigmaInput, setSigmaInput] = useState(""); // "" = auto (API uses realized vol of the last 60 1m bars)
   const sigmaVal = parseFloat(sigmaInput);
   const sigma = Number.isFinite(sigmaVal) && sigmaVal > 0 ? sigmaVal : null;
@@ -372,6 +382,19 @@ const m = data?.model;
         <Row title="5 minute market" row={m5} next={n5} />
       </div>
 
+      {/* tab bar */}
+      <div className="flex gap-2">
+        {([["overview", "Overview"], ["tfm", "TFM Forecast"]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => pickTab(k)}
+            className={`text-xs font-medium rounded-lg px-3 py-1.5 border transition-colors ${tab === k ? "bg-[#5ad1e6]/10 text-[#5ad1e6] border-[#5ad1e6]/35" : "text-[#9a9ca3] border-[rgba(190,190,200,0.15)] hover:border-[rgba(190,190,200,0.28)]"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "tfm" && <TfmForecastTab coin={coin} data={data} />}
+
+      {tab === "overview" && (<>
       {/* Jev Decision Model — 1-Hour Prediction (First card under prices) */}
       <Collapsible id="openJev" openState={openJev} toggle={() => setOpenJev(!openJev)}
         color={COINS.find(c => c.key === coin)?.color || "#6aa9d8"}
@@ -964,6 +987,7 @@ const m = data?.model;
           slugs · 1h: {m1h?.slug || "—"} · 15m: {m15?.slug || "—"} · 5m: {m5?.slug || "—"} · server t={data.t?.toFixed(1)}m
         </p>
       )}
+      </>)}
     </div>
   );
 }

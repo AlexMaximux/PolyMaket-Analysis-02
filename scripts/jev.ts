@@ -14,6 +14,7 @@ import { askClFile } from '../src/lib/clAsk';
 import { updateMarketResolutions } from '../src/lib/marketResolver';
 import { getSetting } from '../src/lib/settings';
 import { beat } from '../src/lib/heartbeat';
+import { recordTfmForSnapshot } from '../src/lib/tfm/snapshot';
 
 const SNAPSHOT_INTERVAL_MS = getSetting('jev.snapshotIntervalSec') * 1000; // live cache refresh (default 30s)
 const JEV_RECORD_INTERVAL_MS = getSetting('jev.recordIntervalSec') * 1000; // multi-model record (default 5 min)
@@ -56,6 +57,12 @@ async function startLoop() {
         console.log(
           `[${new Date().toISOString()}] 💾 SAVED 5-MIN MULTI-MODEL RECORD -> ${filename} | Consensus: ${multi.consensus?.summary || 'N/A'} | Jev: ${jevDir} | Kev: ${kevDir} | Span: ${spanDir}`
         );
+
+        // TimesFM forecast of this snapshot (jev/tfm/forecasts.jsonl). Not awaited: it never throws and gives up
+        // after 10 s, so it cannot delay or stop the loop. Does nothing when the local TimesFM service is not up.
+        void recordTfmForSnapshot(filename, snapshot).then((r) => {
+          if (r === 'saved') console.log(`[${new Date().toISOString()}] [${coin.toUpperCase()}] TFM forecast saved for ${filename}`);
+        });
 
         // CL copy (jev/cl/): the same snapshot plus the Claude fair value, asked again with those inputs.
         // Runs after the original is saved and logged; a failure here must never stop the collector.

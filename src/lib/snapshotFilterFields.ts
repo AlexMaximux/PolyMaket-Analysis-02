@@ -19,6 +19,10 @@ export interface FilterableRow {
   up_15m_num?: number | null;
   up_5m_num?: number | null;
   fair_claude?: number | null;
+  tfm_prob_up?: number | null;
+  tfm_up_15m?: number | null;
+  tfm_up_5m?: number | null;
+  fair_tfm?: number | null;
   spot_price?: number | null;
   price_to_beat?: number | null;
   market_outcome?: string | null;
@@ -33,6 +37,16 @@ export const DIR_CHOICES = [
 /** Claude fair value minus the 1H Up price, in cents; positive when Claude prices UP above the market. */
 export function claudeEdge(r: FilterableRow): number | null {
   return r.fair_claude != null && r.up_1h_num != null ? Number((r.fair_claude - r.up_1h_num).toFixed(2)) : null;
+}
+
+/** TimesFM 1H probability of UP minus the 1H Up price, in cents; positive when TimesFM prices UP above the market. */
+export function tfmEdge(r: FilterableRow): number | null {
+  return r.tfm_prob_up != null && r.up_1h_num != null ? Number((r.tfm_prob_up - r.up_1h_num).toFixed(2)) : null;
+}
+
+/** `a - b` in cents, two decimals; null when either is missing. */
+function centsDiff(a: number | null | undefined, b: number | null | undefined): number | null {
+  return a != null && b != null ? Number((a - b).toFixed(2)) : null;
 }
 
 /** The 3-model consensus column's reading: all answering models agree, a majority, or a tie. */
@@ -104,15 +118,31 @@ export function snapshotFilterFields<T>(rowOf: (item: T) => FilterableRow, coins
     ...model("Mercury-Decide", "Mercury", "mercury_", conf3),
     ...model("Liquid-D1", "Liquid", "liquid_", conf3),
 
+    ...model("TimesFM", "TFM", "tfm_", conf3),
+    num("tfm_up_15m", "TFM 15M prob UP", "TimesFM", "%"),
+    num("tfm_up_5m", "TFM 5M prob UP", "TimesFM", "%"),
+    num("tfm_ret_1h", "TFM expected move to hour close", "TimesFM", "%"),
+    num("tfm_edge", "TFM edge (prob UP − 1H price)", "TimesFM", "¢", tfmEdge),
+    num("tfm_edge_15m", "TFM 15M edge (prob UP − 15M price)", "TimesFM", "¢", (r) => centsDiff(r.tfm_up_15m, r.up_15m_num)),
+    num("tfm_edge_5m", "TFM 5M edge (prob UP − 5M price)", "TimesFM", "¢", (r) => centsDiff(r.tfm_up_5m, r.up_5m_num)),
+
     num("fair_15m", "Fair 15m", "Fair value", "¢"),
     num("fair_5m", "Fair 5m", "Fair value", "¢"),
     num("fair_joint", "Fair joint solve", "Fair value", "¢"),
     num("fair_base", "Fair base (no drift)", "Fair value", "¢"),
     num("fair_claude", "Fair Claude", "Fair value", "¢"),
+    num("fair_tfm", "Fair TimesFM", "Fair value", "¢"),
     num("claude_edge", "Claude edge (fair − 1H price)", "Fair value", "¢", claudeEdge),
 
     num("tokens", "Jev tokens", "Cost"),
   ];
+}
+
+/** TimesFM's probability (0-100) for the side a trade buys: its UP probability for UP, the rest for DOWN. */
+function tradeTfmProb(t: Trade): number | null {
+  const up = t.row.tfm_prob_up;
+  if (up == null) return null;
+  return t.dir === "UP" ? up : Number((100 - up).toFixed(2));
 }
 
 /**
@@ -127,6 +157,11 @@ export function tradeFilterFields(coins: string[] = []): FilterField<Trade>[] {
     { id: "trade_score", label: "Signal score (model in use)", group: g, kind: "number", get: (t) => t.modelScore },
     { id: "trade_conf", label: "Signal confidence (model in use)", group: g, kind: "number", unit: "%", get: (t) => t.modelConf },
     { id: "trade_price", label: "Price of side bought (quoted)", group: g, kind: "number", unit: "¢", get: (t) => (t.quote == null ? null : Number((t.quote * 100).toFixed(2))) },
+    { id: "trade_tfm_prob", label: "TFM probability of side bought", group: g, kind: "number", unit: "%", get: (t) => tradeTfmProb(t) },
+    {
+      id: "trade_tfm_edge", label: "TFM edge toward the trade", group: g, kind: "number", unit: "¢",
+      get: (t) => centsDiff(tradeTfmProb(t), t.quote == null ? null : t.quote * 100),
+    },
     { id: "trade_agree", label: "Jev/Kev/Span agreeing with trade", group: g, kind: "number", get: (t) => t.agreeCount },
     {
       id: "trade_flipped", label: "Opposite signal earlier in hour", group: g, kind: "choice",

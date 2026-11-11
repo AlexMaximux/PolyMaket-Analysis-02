@@ -13,9 +13,41 @@ export const RECORDER_COINS = ['btc', 'eth', 'sol', 'xrp', 'doge', 'hype', 'bnb'
 
 const r = (v: unknown, d = 6) => (typeof v === 'number' && Number.isFinite(v) ? Number(v.toFixed(d)) : null);
 
+interface TfmTickSnapshot {
+  model: string;
+  h1: number | null;
+  m15: number | null;
+  m5: number | null;
+}
+
+async function fetchTfmSnapshot(coin: string): Promise<TfmTickSnapshot | null> {
+  try {
+    const base = process.env.PMP_BASE_URL || 'http://127.0.0.1:8000';
+    const res = await fetch(`${base}/api/updown/tfm?coin=${encodeURIComponent(coin)}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.service?.ok) return null;
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    return {
+      model: typeof data.service.model === 'string' ? data.service.model : '',
+      h1: num(data.windows?.h1?.probUp),
+      m15: num(data.windows?.m15?.probUp),
+      m5: num(data.windows?.m5?.probUp),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Returns the coins that could not be recorded this time. */
 export async function recordUpdownTicks(coins = RECORDER_COINS): Promise<string[]> {
-  const snaps = await Promise.all(coins.map(c => fetchUpdownSnapshot(c)));
+  const [snaps, tfms] = await Promise.all([
+    Promise.all(coins.map(c => fetchUpdownSnapshot(c))),
+    Promise.all(coins.map(c => fetchTfmSnapshot(c))),
+  ]);
   const lines: string[] = [];
   const missing: string[] = [];
   snaps.forEach((d, i) => {
@@ -35,6 +67,7 @@ export async function recordUpdownTicks(coins = RECORDER_COINS): Promise<string[
         claude: r(d.modelClaude?.fairUp),
       },
       claude_version: d.modelClaude?.version ?? null,
+      tfm: tfms[i] ?? null,
     }));
   });
   if (lines.length) {

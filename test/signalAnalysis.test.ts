@@ -6,7 +6,10 @@ import {
   FROZEN_STRATEGY_3,
   FROZEN_STRATEGY_4,
   FROZEN_STRATEGY_5,
+  FROZEN_STRATEGY_7,
+  LAB_PRESETS,
   STRATEGY_HISTORY,
+  STRATEGIES_BY_ID,
   buildTrades,
   computeMetrics,
   detectSignal,
@@ -65,6 +68,12 @@ describe('detectSignal', () => {
   it('averages the three scores for the avg model', () => {
     const r = row({ hm: '04:10', score: 3.9, kev_score: 3.6, span_score: 3.3, consensus_agreement: 100 });
     expect(detectSignal(r, cfg({ model: 'avg' }))?.score).toBe(3.6);
+  });
+  it('reads the TimesFM score and score confidence for the tfm model', () => {
+    const c = cfg({ model: 'tfm', bullishScore: 3.25, bullishMinConf: 80, bearishScore: 0.75, bearishMinConf: 80 });
+    expect(detectSignal(row({ hm: '04:10', tfm_score: 3.4, tfm_score_confidence: 85 }), c)?.dir).toBe('UP');
+    expect(detectSignal(row({ hm: '04:10', tfm_score: 0.5, tfm_score_confidence: 88 }), c)?.dir).toBe('DOWN');
+    expect(detectSignal(row({ hm: '04:10' }), c)).toBeNull();
   });
 });
 
@@ -201,6 +210,78 @@ describe('solar filter', () => {
   });
 });
 
+describe('TimesFM confirmation', () => {
+  const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN' } as const;
+  it('records TimesFM P(side) and its edge over the quote on the trade', () => {
+    const [t] = buildTrades([row({ hm: '04:40', ...down, up_1h_num: 30, market_outcome: 'DOWN', tfm_prob_up: 20 })], cfg());
+    expect(t.dir).toBe('DOWN');
+    expect(t.tfmProb).toBe(80);
+    expect(t.tfmEdge).toBe(10);
+    const [up] = buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 76.04 })], cfg());
+    expect(up.tfmProb).toBe(76);
+    expect(up.tfmEdge).toBe(6);
+    const [rounded] = buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 76.06 })], cfg());
+    expect(rounded.tfmProb).toBe(76.1);
+    expect(rounded.tfmEdge).toBe(6.1);
+  });
+  it('leaves tfmProb and tfmEdge null without a TimesFM forecast', () => {
+    const [t] = buildTrades([row({ hm: '04:40', ...down, up_1h_num: 30 })], cfg());
+    expect(t.tfmProb).toBeNull();
+    expect(t.tfmEdge).toBeNull();
+    const [n] = buildTrades([row({ hm: '04:40', tfm_prob_up: null })], cfg());
+    expect(n.tfmProb).toBeNull();
+    expect(n.tfmEdge).toBeNull();
+  });
+  it('keeps tfmProb but has no edge when the quote is missing', () => {
+    const [t] = buildTrades([row({ hm: '04:40', up_1h_num: null, tfm_prob_up: 60 })], cfg());
+    expect(t.tfmProb).toBe(60);
+    expect(t.tfmEdge).toBeNull();
+  });
+  it('tfmMinProb keeps a TimesFM-agreeing signal and drops disagreeing and missing ones', () => {
+    const on = cfg({ tfmMinProb: 50, dedupe: 'firstPerHour' });
+    expect(buildTrades([row({ hm: '04:40', tfm_prob_up: 60 })], on)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', tfm_prob_up: 40 })], on)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40' })], on)).toHaveLength(0);
+    // DOWN signal: P(down) = 100 - P(up)
+    expect(buildTrades([row({ hm: '04:40', ...down, up_1h_num: 30, tfm_prob_up: 40 })], on)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...down, up_1h_num: 30, tfm_prob_up: 60 })], on)).toHaveLength(0);
+  });
+  it('tfmMinEdge compares TimesFM P(side) minus the quote, and -100 keeps rows without TimesFM', () => {
+    const on = cfg({ tfmMinEdge: 5, dedupe: 'firstPerHour' });
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 76 })], on)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 74 })], on)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 75 })], on)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70 })], on)).toHaveLength(0);
+    const off = cfg({ tfmMinEdge: -100, dedupe: 'firstPerHour' });
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70 })], off)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 1 })], off)).toHaveLength(1);
+  });
+  it('a negative tfmMinEdge still requires a TimesFM value', () => {
+    const on = cfg({ tfmMinEdge: -10, dedupe: 'firstPerHour' });
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 61 })], on)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70, tfm_prob_up: 59 })], on)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', up_1h_num: 70 })], on)).toHaveLength(0);
+  });
+  it('picks the first hour signal that TimesFM agrees with', () => {
+    const on = cfg({ tfmMinProb: 50, dedupe: 'firstPerHour' });
+    const trades = buildTrades([row({ hm: '04:35', tfm_prob_up: 30 }), row({ hm: '04:40', tfm_prob_up: 70 })], on);
+    expect(trades).toHaveLength(1);
+    expect(trades[0].minute).toBe(40);
+  });
+  it('is off by default and in every frozen rule, so history does not change', () => {
+    expect(DEFAULT_ANALYSIS_CONFIG.tfmMinProb).toBe(0);
+    expect(DEFAULT_ANALYSIS_CONFIG.tfmMinEdge).toBe(-100);
+    for (const s of Object.values(STRATEGIES_BY_ID)) {
+      expect(s.rule.tfmMinProb).toBe(0);
+      expect(s.rule.tfmMinEdge).toBe(-100);
+    }
+    for (const s of STRATEGY_HISTORY) {
+      expect(s.rule.tfmMinProb).toBe(0);
+      expect(s.rule.tfmMinEdge).toBe(-100);
+    }
+  });
+});
+
 describe('flipped-hour filter (noPriorOpposite)', () => {
   const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN' } as const;
   // 04:10 DOWN at 60% confidence is not a trade at the 90% floor, but it shows the hour already flipped
@@ -288,6 +369,42 @@ describe('frozen strategy 5 (strategy 1 + optimised)', () => {
     expect(buildTrades([row({ hm: '04:40', ...down, score_confidence: 40 })], r)).toHaveLength(1);
     expect(buildTrades([row({ hm: '04:40', ...down, score_confidence: 99 })], r)).toHaveLength(0);
     expect(buildTrades([row({ hm: '04:56', ...down, score_confidence: 40 })], r)).toHaveLength(0);
+  });
+});
+
+describe('frozen strategy 7 (strategy 1 + TimesFM confirmer)', () => {
+  const r = FROZEN_STRATEGY_7.rule;
+  it('is v2 with only the TimesFM edge filter added', () => {
+    expect(r.tfmMinEdge).toBe(0);
+    expect({ ...r, tfmMinEdge: -100 }).toEqual(FROZEN_STRATEGY.rule);
+    expect(FROZEN_STRATEGY_7.id).toBe('s7');
+  });
+  it('runs in parallel, frozen on the top of an hour after strategy 5, and is not an alert strategy', () => {
+    const t = new Date(FROZEN_STRATEGY_7.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_5.frozenAt).getTime());
+    expect(STRATEGY_HISTORY).not.toContain(FROZEN_STRATEGY_7);
+    expect(FROZEN_STRATEGY_7.frozenUntil).toBeNull();
+    expect(Object.values(STRATEGIES_BY_ID)).not.toContain(FROZEN_STRATEGY_7);
+  });
+  it('is offered by the Strategy Lab with every other frozen strategy', () => {
+    expect(Object.keys(LAB_PRESETS)).toEqual([...Object.keys(STRATEGIES_BY_ID), 's7']);
+    expect(LAB_PRESETS.s7).toBe(FROZEN_STRATEGY_7);
+  });
+  it('trades only when TimesFM prices the side at least at its quote, and takes a later snapshot of the hour that does', () => {
+    const up = { score: 3.8, direction: 'UP', kev_direction: 'UP', span_direction: 'UP', up_1h_num: 80, score_confidence: 95 } as const;
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 90 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 80 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 70 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...up })], r)).toHaveLength(0); // no TimesFM forecast: cannot trade
+    const later = buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 70 }), row({ hm: '04:50', ...up, tfm_prob_up: 85 })], r);
+    expect(later.map((t) => t.minute)).toEqual([50]);
+    expect(buildTrades([row({ hm: '04:20', ...up, tfm_prob_up: 90 })], r)).toHaveLength(0); // v2's minute 32 floor still applies
+  });
+  it('treats a DOWN signal by the TimesFM probability of DOWN', () => {
+    const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN', up_1h_num: 20, score_confidence: 95 } as const;
+    expect(buildTrades([row({ hm: '04:40', ...down, tfm_prob_up: 10 })], r)).toHaveLength(1); // P(down) 90 >= 80
+    expect(buildTrades([row({ hm: '04:40', ...down, tfm_prob_up: 30 })], r)).toHaveLength(0); // P(down) 70 < 80
   });
 });
 

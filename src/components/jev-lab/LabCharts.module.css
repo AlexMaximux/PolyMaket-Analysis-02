@@ -1,0 +1,31 @@
+.equity { position: relative; min-width: 0; width: 100%; font-variant-numeric: tabular-nums; }
+.equity svg { display: block; overflow: visible; touch-action: pan-y; }
+.axis { fill: #a6a5ab; font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.emptyText { fill: #b4b4b4; font-size: 12px; font-family: inherit; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; color: #b4b4b4; font-size: 12px; min-height: 26px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { display: inline-block; width: 15px; height: 2px; }
+.activeSwatch { background: #80b5e5; }
+.compareSwatch { background: #77777d; }
+.caption { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; min-height: 24px; color: #aaa9af; font-size: 11px; }
+.caption strong { color: #e8e8ed; font-size: 12px; font-weight: 500; }
+.note { color: #aaa9af; font-size: 11px; margin-top: 5px; }
+.breakdown { font-size: 12px; font-variant-numeric: tabular-nums; width: 100%; }
+.breakdownHeader { display: flex; justify-content: space-between; color: #aaa9af; gap: 12px; margin-bottom: 7px; }
+.breakdownRow { display: grid; grid-template-columns: minmax(75px, 0.8fr) minmax(130px, 1.5fr); align-items: center; gap: 12px; min-height: 39px; }
+.rowLabel { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.rowLabel strong { font-weight: 500; color: #e8e8ed; }
+.rowLabel span { font-size: 11px; color: #aaa9af; }
+.barColumn { display: grid; grid-template-columns: minmax(50px, 1fr) 78px; align-items: center; gap: 12px; direction: ltr; }
+.barTrack { position: relative; height: 12px; }
+.barTrack i { position: absolute; }
+.zero { top: 0; height: 12px; width: 1px; background: #6b6870; }
+.positiveBar, .negativeBar { top: 3px; height: 6px; }
+.positiveBar { background: #80b5e5; }
+.negativeBar { background: #9f979b; }
+.barValue { text-align: right; color: #e8e8ed; white-space: nowrap; }
+.breakdownScale { display: grid; grid-template-columns: minmax(75px, 0.8fr) minmax(130px, 1.5fr); gap: 12px; margin-top: 5px; color: #aaa9af; font-size: 11px; }
+.breakdownScale > div { display: flex; justify-content: space-between; margin-right: 90px; }
+.expand { display: block; margin-top: 12px; min-height: 32px; color: #dddce2; border-bottom: 1px solid #80b5e5; cursor: pointer; background: none; font: inherit; }
+.empty { color: #aaa9af; padding: 32px 0; text-align: center; }
+@media (max-width: 600px) { .caption { font-size: 12px; } .breakdownRow { min-height: 44px; } .expand { min-height: 44px; } }

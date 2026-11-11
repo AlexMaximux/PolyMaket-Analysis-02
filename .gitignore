@@ -48,3 +48,7 @@ next-env.d.ts
 
 # tooling
 .playwright-mcp/
+
+# TimesFM service (tfm/)
+/tfm/.venv/
+__pycache__/

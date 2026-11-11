@@ -3,6 +3,7 @@ import fs from 'fs';
 import { forwardSnapshotRow } from '@/lib/forwardSnapshot';
 import path from 'path';
 import { updateMarketResolutions, getResolutionsMap } from '@/lib/marketResolver';
+import { loadTfmStore, tfmRowFields } from '@/lib/tfm/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +14,7 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const requestedFile = searchParams.get('file');
+    const isLabView = searchParams.get('view') === 'lab';
 
     // set=cl reads the CL dataset (jev/cl): the same snapshots re-asked with the Claude fair value added.
     // Without it nothing changes: only jev/history is read.
@@ -66,6 +68,9 @@ export async function GET(req: Request) {
         fileNames = fileNames.slice(0, limit);
       }
     }
+
+    // TimesFM forecasts by snapshot file name (jev/tfm/forecasts.jsonl); a CL file uses the forecast of its original.
+    const tfmStore = loadTfmStore();
 
     const files = fileNames.map(f => {
       try {
@@ -188,13 +193,16 @@ export async function GET(req: Request) {
           liquid_confidence: pct(pLiquid?.score_confidence ?? pLiquid?.direction_confidence),
           liquid_prob_up: pLiquid?.prob_up ?? null,
 
+          // TimesFM forecast of this snapshot (null fields when there is none)
+          ...tfmRowFields(tfmStore.get(isCl ? f.replace(/^CL-/, '') : f)),
+
           // Consensus
           consensus_direction: consensus?.direction ?? null,
           consensus_summary: consensus?.summary ?? null,
           consensus_agreement: consensus?.agreement ?? null,
 
-          // Multi-model object
-          predictions: preds,
+          // The strategy lab only needs flattened fields, not the models' raw response prose.
+          ...(isLabView ? {} : { predictions: preds }),
 
           up_1h: cards['1h']?.up_display ?? null,
           down_1h: cards['1h']?.down_display ?? null,

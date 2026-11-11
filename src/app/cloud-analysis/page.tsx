@@ -19,6 +19,7 @@ import {
   FROZEN_STRATEGY_3,
   FROZEN_STRATEGY_4,
   FROZEN_STRATEGY_5,
+  FROZEN_STRATEGY_7,
   STRATEGY_HISTORY,
   LATE_MINUTE,
   MINUTE_BUCKETS,
@@ -50,7 +51,7 @@ const STORAGE_KEY = "cloud_analysis_config_v1";
 // Offered first in the field filter panel: the trade's own values, time, and the most used snapshot fields
 const QUICK_FILTER_FIELDS = [
   "minute", "hour", "trade_dir", "trade_price", "trade_conf", "trade_score", "trade_agree",
-  "score", "score_confidence", "kev_score", "fair_claude", "claude_edge", "spot_vs_ptb",
+  "score", "score_confidence", "kev_score", "fair_claude", "claude_edge", "trade_tfm_edge", "spot_vs_ptb",
 ];
 
 const C = {
@@ -76,7 +77,7 @@ type ScenarioDef = { id: string; name: string; hint: string; over: Partial<Analy
 // Scenarios keep the current data scope (coins/dates/hours) and money settings; they change only signal logic.
 const SIGNAL_KEYS: (keyof AnalysisConfig)[] = [
   "model", "confidenceType", "bullishScore", "bearishScore", "bullishMinConf", "bearishMinConf", "bullishMaxConf", "bearishMaxConf", "directions",
-  "consensus", "solarAgrees", "solarMinConf", "noPriorOpposite", "minMinute", "maxMinute", "minEntry", "maxEntry", "dedupe", "pickOrder",
+  "consensus", "solarAgrees", "solarMinConf", "tfmMinProb", "tfmMinEdge", "noPriorOpposite", "minMinute", "maxMinute", "minEntry", "maxEntry", "dedupe", "pickOrder",
 ];
 const SCENARIOS: ScenarioDef[] = [
   { id: "raw", name: "Every signal snapshot", hint: "Each 5-min snapshot counted as its own trade (inflated).", over: { dedupe: "all" } },
@@ -703,6 +704,7 @@ export default function CloudAnalysisPage() {
   const frozen3 = useMemo(() => forwardOf(FROZEN_STRATEGY_3), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
   const frozen4 = useMemo(() => forwardOf(FROZEN_STRATEGY_4), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
   const frozen5 = useMemo(() => forwardOf(FROZEN_STRATEGY_5), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen7 = useMemo(() => forwardOf(FROZEN_STRATEGY_7), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Each closed/current rule in STRATEGY_HISTORY, scored only on its own forward window
   // [frozenAt, frozenUntil). A superseded rule's window is frozen in time, so its result never
@@ -907,6 +909,7 @@ export default function CloudAnalysisPage() {
                 { value: "tev", label: "Tev" },
                 { value: "mercury", label: "Mercury" },
                 { value: "liquid", label: "Liquid" },
+                { value: "tfm", label: "TimesFM" },
                 { value: "avg", label: "Avg of 3", title: "Average of the three scores; confidence = agreement %" },
               ]}
             />
@@ -952,6 +955,12 @@ export default function CloudAnalysisPage() {
           </Field>
           <Field label="Solar min confidence %" hint="0 = off. Rows without a Solar prediction are excluded when above 0.">
             <NumberInput value={cfg.solarMinConf} min={0} max={100} onChange={(v) => set("solarMinConf", v)} />
+          </Field>
+          <Field label="TimesFM min prob for traded side %" hint="0 = off, 50 = TimesFM agrees. Rows without a TimesFM forecast are excluded when above 0.">
+            <NumberInput value={cfg.tfmMinProb} min={0} max={100} onChange={(v) => set("tfmMinProb", v)} />
+          </Field>
+          <Field label="TimesFM min edge ¢" hint="TimesFM probability of the traded side minus that side's price, in cents. -100 = off. Rows without a TimesFM forecast are excluded when above -100.">
+            <NumberInput value={cfg.tfmMinEdge} min={-100} max={100} onChange={(v) => set("tfmMinEdge", v)} />
           </Field>
           <Field label="Flipped hours" hint="Skip the hour if a signal pointing the other way (any confidence) already appeared in it">
             <Segmented
@@ -1075,6 +1084,18 @@ export default function CloudAnalysisPage() {
                 before={frozen5.before}
                 after={frozen5.after}
                 afterTrades={frozen5.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_7}
+                title="Frozen strategy 1 + TimesFM: forward test (paper only, TimesFM probability of the side ≥ its price)"
+                before={frozen7.before}
+                after={frozen7.after}
+                afterTrades={frozen7.afterTrades}
                 history={[]}
                 stake={cfg.stake}
                 slippage={cfg.slippageCents}
@@ -1251,8 +1272,8 @@ export default function CloudAnalysisPage() {
                   <table className="w-full text-[12px] border-separate border-spacing-0">
                     <thead>
                       <tr className="text-[11px] text-[#73757c]">
-                        {["Time ET", "Coin", "Min", "Signal", "Score", "Conf", "Agree", "Price", "Outcome", "Result", "P&L"].map((h) => (
-                          <th key={h} className={`font-medium px-2 py-1.5 ${["Score", "Conf", "Price", "P&L"].includes(h) ? "text-right" : "text-left"}`}>{h}</th>
+                        {["Time ET", "Coin", "Min", "Signal", "Score", "Conf", "Agree", "Price", "TFM", "Outcome", "Result", "P&L"].map((h) => (
+                          <th key={h} className={`font-medium px-2 py-1.5 ${["Score", "Conf", "Price", "TFM", "P&L"].includes(h) ? "text-right" : "text-left"}`}>{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1273,6 +1294,19 @@ export default function CloudAnalysisPage() {
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-right text-[#9a9ca3]">{t.modelConf}%</td>
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-[#9a9ca3]">{t.agreeCount}/3</td>
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-right text-[#e8e8e4]">{cents(t.entry)}</td>
+                          <td
+                            className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-right whitespace-nowrap text-[#9a9ca3]"
+                            title="TimesFM probability of the traded side, and its edge over the quoted price"
+                          >
+                            {t.tfmProb == null ? "—" : (
+                              <>
+                                {t.tfmProb.toFixed(1)}%
+                                <span className="ml-1.5" style={{ color: signColor(t.tfmEdge) }}>
+                                  {t.tfmEdge == null ? "—" : `${t.tfmEdge > 0 ? "+" : t.tfmEdge < 0 ? "−" : ""}${Math.abs(t.tfmEdge).toFixed(1)}¢`}
+                                </span>
+                              </>
+                            )}
+                          </td>
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-[#9a9ca3]">{t.row.market_outcome ?? "—"}</td>
                           <td className="px-2 py-1.5 border-t border-white/[0.05]"><StatusTag status={t.status} /></td>
                           <td className="px-2 py-1.5 border-t border-white/[0.05] font-mono text-right" style={{ color: signColor(t.pnl) }}>
@@ -1281,7 +1315,7 @@ export default function CloudAnalysisPage() {
                         </tr>
                       ))}
                       {!trades.length && (
-                        <tr><td colSpan={11} className="px-2 py-6 text-center text-[#73757c]">No trades match these settings</td></tr>
+                        <tr><td colSpan={12} className="px-2 py-6 text-center text-[#73757c]">No trades match these settings</td></tr>
                       )}
                     </tbody>
                   </table>

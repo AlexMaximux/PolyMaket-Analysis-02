@@ -9,6 +9,7 @@ export function Navigation() {
   const links = [
     { href: "/updown", label: "Up/Down" },
     { href: "/jev-analysis", label: "Jev Analysis" },
+    { href: "/jev-analysis/v2", label: "Strategy Lab" },
     { href: "/cloud-analysis", label: "Cloud Analysis" },
     { href: "/alerts", label: "Alerts" },
     { href: "/control", label: "Control" },
@@ -17,7 +18,7 @@ export function Navigation() {
   return (
     <nav className="flex items-center gap-0.5 overflow-x-auto">
       {links.map((link) => {
-        const isActive = pathname === link.href || (link.href !== "/" && pathname.startsWith(link.href));
+        const isActive = pathname === link.href || (pathname.startsWith(`${link.href}/`) && !links.some(other => other.href !== link.href && other.href.startsWith(`${link.href}/`) && pathname.startsWith(other.href)));
         return (
           <Link
             key={link.href}
