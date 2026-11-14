@@ -10,6 +10,7 @@ import { OrderSide as UnifiedOrderSide, OrderType as UnifiedOrderType } from '@p
 import { createDepositWalletClient, depositOrderHash, ensureDepositTradingApprovals, getDepositCollateralBalanceUsd } from './depositWallet';
 import { fetchNegRisk } from '@polymarket/client/actions';
 import { getPolymarketGeoStatus } from './geo';
+import { decideStake, isStakePlanRequest } from './stake';
 export { getBotWalletConfig } from './live';
 const POLYGON_CHAIN_ID = 137;
 /** Default for the bot.maxAttempts setting. */
@@ -428,7 +429,11 @@ function assertStillAllowed(row: BotRequest, market: ActiveMarketInfo, identity:
   }
   const limits = getBotBudgetLimits();
   if (!getSetting('bot.enabled')) throw new Error('ربات غیرفعال شد (bot disabled).');
-  if (limits.simulationMode !== !!row.simulated || limits.perTrade !== row.amount || walletIdentity() !== identity) {
+  // A P4 request was reserved with a computed amount, so it is checked against the plan and the cap instead of the fixed amount.
+  const stakeChanged = isStakePlanRequest(signal)
+    ? row.amount > getSetting('bot.stakeCap') + 0.000001 && row.amount !== limits.perTrade // the fixed fallback may exceed the cap
+    : limits.perTrade !== row.amount;
+  if (limits.simulationMode !== !!row.simulated || stakeChanged || walletIdentity() !== identity) {
     throw new Error('تنظیمات معامله تغییر کرد؛ درخواست متوقف شد.');
   }
   if (getTotalSpent(!!row.simulated) + row.amount > limits.maxBudget + 0.000001) throw new Error('بودجه کاهش یافته است.');
@@ -442,7 +447,11 @@ export async function executeSignal(signal: SignalRequest): Promise<TradeResult>
   }
   if (!signal.requestId || !/^[A-Za-z0-9:_-]{1,160}$/.test(signal.requestId)) return resultFor(signal, undefined, 'شناسهٔ یکتای درخواست الزامی است.');
   let reservation;
-  try { reservation = reserveRequest(signal); }
+  try {
+    // A signal that was already reserved keeps its amount: no second balance read, no second message.
+    const decision = findRequest(signal.requestId) ? null : await decideStake(signal);
+    reservation = reserveRequest(signal, decision?.amount);
+  }
   catch (e) { return resultFor(signal, undefined, e instanceof Error ? e.message : 'رزرو بودجه ناموفق بود.'); }
   let row = reservation.row;
   if (reservation.duplicate) {

@@ -161,6 +161,7 @@ export function CurveOptimizer({ rows, config, onApply, dataRevision }: {
       <span>{config.coins.join(" / ") || "همهٔ ارزها"}</span><span>مدل {config.model.toUpperCase()}</span>
       <span>دقیقهٔ {config.minMinute}–{config.maxMinute}</span><span>قیمت سهم {config.minEntry}–{config.maxEntry}¢</span>
       <span>{scope.rows.length.toLocaleString("en-US")} اسنپ‌شات در محدوده</span>
+      <span>سرمایهٔ هر معامله {money(config.stake).replace("+", "")} · لغزش {config.slippageCents}¢</span>
     </div>
 
     <div className={styles.searchGrid}>

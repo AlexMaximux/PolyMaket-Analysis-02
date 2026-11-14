@@ -1,17 +1,53 @@
 import fs from 'fs';
 import path from 'path';
 import { activeTfmModelKey, tfmModelKeyOf, type TfmModelKey } from './config';
-import type { TfmRecord } from './types';
+import { TFM_MAX_CONTEXT, type TfmRecord } from './types';
 
-/** <cwd>/jev/tfm/forecasts-<key>.jsonl: append-only, one TfmRecord per line, the last line for a file wins. */
-export function tfmStorePath(key?: TfmModelKey): string {
-  const k = key ?? activeTfmModelKey();
-  return path.join(process.cwd(), 'jev', 'tfm', `forecasts-${k}.jsonl`);
+// Context lengths a forecast store can be built with (1-minute points). TFM_MAX_CONTEXT is the live one.
+export const TFM_CONTEXT_MIN = 32;
+export const TFM_CONTEXT_MAX = 16384;
+
+/** A context length from untrusted input, or null when it is not a whole number in range. */
+export function tfmContextOf(v: unknown): number | null {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
+  return typeof n === 'number' && Number.isInteger(n) && n >= TFM_CONTEXT_MIN && n <= TFM_CONTEXT_MAX ? n : null;
 }
 
-function appendRecordsToKey(key: TfmModelKey, records: TfmRecord[]): void {
+/**
+ * <cwd>/jev/tfm/forecasts-<key>.jsonl: append-only, one TfmRecord per line, the last line for a file wins.
+ * A store built with another context length (backfill --context=N) is forecasts-<key>-ctx<N>.jsonl; the live
+ * collector, the bot and the frozen strategies use only the default store (context TFM_MAX_CONTEXT).
+ */
+export function tfmStorePath(key?: TfmModelKey, context: number = TFM_MAX_CONTEXT): string {
+  const k = key ?? activeTfmModelKey();
+  const suffix = context === TFM_MAX_CONTEXT ? '' : `-ctx${context}`;
+  return path.join(process.cwd(), 'jev', 'tfm', `forecasts-${k}${suffix}.jsonl`);
+}
+
+/** Context lengths that have a store for this model, ascending (the default one included when it exists). */
+export function listTfmContexts(key?: TfmModelKey): number[] {
+  const k = key ?? activeTfmModelKey();
+  let names: string[];
+  try {
+    names = fs.readdirSync(path.join(process.cwd(), 'jev', 'tfm'));
+  } catch {
+    return [];
+  }
+  const out = new Set<number>();
+  const prefix = `forecasts-${k}`;
+  for (const n of names) {
+    if (n === `${prefix}.jsonl`) out.add(TFM_MAX_CONTEXT);
+    else if (n.startsWith(`${prefix}-ctx`) && n.endsWith('.jsonl')) {
+      const c = tfmContextOf(n.slice(prefix.length + 4, -6));
+      if (c != null) out.add(c);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+function appendRecordsToKey(key: TfmModelKey, records: TfmRecord[], context: number): void {
   if (records.length === 0) return;
-  const file = tfmStorePath(key);
+  const file = tfmStorePath(key, context);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let prefix = '';
   try {
@@ -33,7 +69,7 @@ function appendRecordsToKey(key: TfmModelKey, records: TfmRecord[]): void {
   fs.appendFileSync(file, prefix + records.map((r) => JSON.stringify(r)).join('\n') + '\n');
 }
 
-export function appendTfmRecords(records: TfmRecord[]): void {
+export function appendTfmRecords(records: TfmRecord[], context: number = TFM_MAX_CONTEXT): void {
   if (records.length === 0) return;
   const active = activeTfmModelKey();
   const groups = new Map<TfmModelKey, TfmRecord[]>();
@@ -44,16 +80,16 @@ export function appendTfmRecords(records: TfmRecord[]): void {
     else groups.set(k, [r]);
   }
   for (const [k, recs] of groups) {
-    appendRecordsToKey(k, recs);
+    appendRecordsToKey(k, recs, context);
   }
 }
 
 const cacheByKey = new Map<string, { file: string; size: number; mtimeMs: number; map: Map<string, TfmRecord> }>();
 
-/** key = TfmRecord.file. Cached per model key (size + mtime); re-read only when the file's size or mtime changed. Do not mutate the result. */
-export function loadTfmStore(key?: TfmModelKey): Map<string, TfmRecord> {
-  const k = key ?? activeTfmModelKey();
-  const file = tfmStorePath(k);
+/** key = TfmRecord.file. Cached per store file (size + mtime); re-read only when the file's size or mtime changed. Do not mutate the result. */
+export function loadTfmStore(key?: TfmModelKey, context: number = TFM_MAX_CONTEXT): Map<string, TfmRecord> {
+  const file = tfmStorePath(key, context);
+  const k = file;
   let st: fs.Stats;
   try {
     st = fs.statSync(file);

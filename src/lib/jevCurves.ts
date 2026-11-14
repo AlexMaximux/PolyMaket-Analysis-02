@@ -296,7 +296,24 @@ export function curveExtent(points: readonly Pick<CurvePoint, "value">[]): [numb
 }
 
 const BOUND_ID = "__jev_curve_score_bound_";
+const UNFILTERED_BOUND_GROUP = "__jev_curve_unfiltered";
 const BOUND_FIELDS = new Map(tradeFilterFields().map(field => [field.id, field]));
+
+/** Restore an editable rule, removing only the score-cap conditions generated below. */
+export function withoutCurveScoreBounds(config: AnalysisConfig): AnalysisConfig {
+  const groups = new Map<string, FilterGroup>();
+  for (const group of config.fieldFilters || []) {
+    const generated = group.conditions.some(condition => condition.id.startsWith(BOUND_ID));
+    const id = generated ? group.id.replace(/::curve-bound-(UP|DOWN)$/, "") : group.id;
+    const conditions = group.conditions.filter(condition => !condition.id.startsWith(BOUND_ID))
+      .map(condition => ({ ...condition, values: [...condition.values] }));
+    if (generated && id === UNFILTERED_BOUND_GROUP && !conditions.length) continue;
+    // Generated UP/DOWN branches mirror the same original conditions. Collapse only
+    // identical copies, retaining all user conditions and incomplete/empty groups.
+    groups.set(`${id}:${JSON.stringify(conditions)}`, { id, conditions });
+  }
+  return { ...config, fieldFilters: [...groups.values()] };
+}
 
 /**
  * The legacy curve marker has two additional inclusive score caps that AnalysisConfig does
@@ -307,31 +324,30 @@ const BOUND_FIELDS = new Map(tradeFilterFields().map(field => [field.id, field])
 export function withCurveScoreBounds(config: AnalysisConfig, upMax: number, downMin: number): AnalysisConfig {
   const upper = Number.isFinite(upMax) ? Math.min(4, Math.max(0, upMax)) : 4;
   const lower = Number.isFinite(downMin) ? Math.min(4, Math.max(0, downMin)) : 0;
-  const groups = new Map<string, FilterGroup>();
-  for (const group of config.fieldFilters || []) {
-    const id = group.id.replace(/::curve-bound-(UP|DOWN)$/, "");
-    const conditions = group.conditions.filter(condition => !condition.id.startsWith(BOUND_ID))
-      .map(condition => ({ ...condition, values: [...condition.values] }));
-    // Empty/incomplete OR groups were ignored by the original engine. Adding a bound
-    // must not turn one of them into a new branch that bypasses the usable groups.
-    if (conditions.some(condition => isConditionReady(condition, BOUND_FIELDS.get(condition.field)))) {
-      groups.set(`${id}:${JSON.stringify(conditions)}`, { id, conditions });
-    }
-  }
-  const baseGroups = groups.size ? [...groups.values()] : [{ id: "__jev_curve_unfiltered", conditions: [] }];
-  const fieldFilters = baseGroups.flatMap(group => (["UP", "DOWN"] as const).map(direction => {
-    const directionCondition: FilterCondition = {
-      id: `${BOUND_ID}dir_${direction}`, field: "trade_dir", op: "in", a: null, b: null,
-      values: [direction], enabled: true,
-    };
-    const scoreCondition: FilterCondition = {
-      id: `${BOUND_ID}value_${direction}`, field: "trade_score", op: direction === "UP" ? "lte" : "gte",
-      a: direction === "UP" ? upper : lower, b: null, values: [], enabled: true,
-    };
-    return {
-      id: `${group.id}::curve-bound-${direction}`,
-      conditions: [...group.conditions.map(condition => ({ ...condition, values: [...condition.values] })), directionCondition, scoreCondition],
-    };
-  }));
+  const editable = withoutCurveScoreBounds(config);
+  const hasReadyCondition = (group: FilterGroup) => group.conditions.some(condition => isConditionReady(condition, BOUND_FIELDS.get(condition.field)));
+  const baseGroups = editable.fieldFilters.some(hasReadyCondition)
+    ? editable.fieldFilters
+    : [...editable.fieldFilters, { id: UNFILTERED_BOUND_GROUP, conditions: [] }];
+  const fieldFilters = baseGroups.flatMap(group => {
+    // Preserve an incomplete user group as an ignored branch. Adding a cap to it
+    // would activate it and bypass other usable OR groups. Keeping it untouched
+    // also lets the editable-rule helper restore it after applying a search result.
+    if (group.id !== UNFILTERED_BOUND_GROUP && !hasReadyCondition(group)) return [group];
+    return (["UP", "DOWN"] as const).map(direction => {
+      const directionCondition: FilterCondition = {
+        id: `${BOUND_ID}dir_${direction}`, field: "trade_dir", op: "in", a: null, b: null,
+        values: [direction], enabled: true,
+      };
+      const scoreCondition: FilterCondition = {
+        id: `${BOUND_ID}value_${direction}`, field: "trade_score", op: direction === "UP" ? "lte" : "gte",
+        a: direction === "UP" ? upper : lower, b: null, values: [], enabled: true,
+      };
+      return {
+        id: `${group.id}::curve-bound-${direction}`,
+        conditions: [...group.conditions.map(condition => ({ ...condition, values: [...condition.values] })), directionCondition, scoreCondition],
+      };
+    });
+  });
   return { ...config, fieldFilters };
 }

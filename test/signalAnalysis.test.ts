@@ -7,6 +7,8 @@ import {
   FROZEN_STRATEGY_4,
   FROZEN_STRATEGY_5,
   FROZEN_STRATEGY_7,
+  FROZEN_STRATEGY_8,
+  FROZEN_STRATEGY_9,
   LAB_PRESETS,
   STRATEGY_HISTORY,
   STRATEGIES_BY_ID,
@@ -388,7 +390,7 @@ describe('frozen strategy 7 (strategy 1 + TimesFM confirmer)', () => {
     expect(Object.values(STRATEGIES_BY_ID)).not.toContain(FROZEN_STRATEGY_7);
   });
   it('is offered by the Strategy Lab with every other frozen strategy', () => {
-    expect(Object.keys(LAB_PRESETS)).toEqual([...Object.keys(STRATEGIES_BY_ID), 's7']);
+    expect(Object.keys(LAB_PRESETS)).toEqual([...Object.keys(STRATEGIES_BY_ID), 's7', 's8', 's9']);
     expect(LAB_PRESETS.s7).toBe(FROZEN_STRATEGY_7);
   });
   it('trades only when TimesFM prices the side at least at its quote, and takes a later snapshot of the hour that does', () => {
@@ -405,6 +407,78 @@ describe('frozen strategy 7 (strategy 1 + TimesFM confirmer)', () => {
     const down = { score: 0.2, direction: 'DOWN', kev_direction: 'DOWN', span_direction: 'DOWN', up_1h_num: 20, score_confidence: 95 } as const;
     expect(buildTrades([row({ hm: '04:40', ...down, tfm_prob_up: 10 })], r)).toHaveLength(1); // P(down) 90 >= 80
     expect(buildTrades([row({ hm: '04:40', ...down, tfm_prob_up: 30 })], r)).toHaveLength(0); // P(down) 70 < 80
+  });
+});
+
+describe('frozen strategy 8 (v2 · minute 34-59 · price <= 92c · TimesFM >= 50% and edge > 0)', () => {
+  const r = FROZEN_STRATEGY_8.rule;
+  const up = { score: 3.8, direction: 'UP', kev_direction: 'UP', span_direction: 'UP', up_1h_num: 80, score_confidence: 95 } as const;
+  it('is v2 with only the minute, price and TimesFM settings changed', () => {
+    expect({ ...r, minMinute: 32, maxEntry: 100, tfmMinProb: 0, tfmMinEdge: -100 }).toEqual(FROZEN_STRATEGY.rule);
+    expect([r.minMinute, r.maxMinute, r.minEntry, r.maxEntry, r.tfmMinProb, r.tfmMinEdge]).toEqual([34, 59, 0, 92, 50, 0.001]);
+  });
+  it('runs in parallel, frozen on the top of an hour after strategy 7, and is not an alert strategy', () => {
+    const t = new Date(FROZEN_STRATEGY_8.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_7.frozenAt).getTime());
+    expect(FROZEN_STRATEGY_8.frozenUntil).toBeNull();
+    expect(Object.values(STRATEGIES_BY_ID)).not.toContain(FROZEN_STRATEGY_8);
+    expect(LAB_PRESETS.s8).toBe(FROZEN_STRATEGY_8);
+  });
+  it('needs minute 34+, a price up to 92c and a TimesFM edge above zero', () => {
+    expect(buildTrades([row({ hm: '04:34', ...up, tfm_prob_up: 85 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:33', ...up, tfm_prob_up: 85 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...up, up_1h_num: 92, tfm_prob_up: 95 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up, up_1h_num: 92.5, tfm_prob_up: 95 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 80 })], r)).toHaveLength(0); // edge 0 is not >= 0.001
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 80.1 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up })], r)).toHaveLength(0); // no TimesFM forecast: cannot trade
+  });
+  it('needs TimesFM at 50% or more for the side even when the price is low', () => {
+    const cheap = { ...up, up_1h_num: 40 };
+    expect(buildTrades([row({ hm: '04:40', ...cheap, tfm_prob_up: 49.9 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...cheap, tfm_prob_up: 50 })], r)).toHaveLength(1);
+  });
+});
+
+describe('frozen strategy 9 (v2 · minute 32-59 · price <= 90c · TimesFM >= 50% and edge > 0 · fast-move filter)', () => {
+  const r = FROZEN_STRATEGY_9.rule;
+  const up = { score: 3.8, direction: 'UP', kev_direction: 'UP', span_direction: 'UP', up_1h_num: 80, score_confidence: 95 } as const;
+  it('is v2 with only the price cap, the TimesFM and the fast-move settings added', () => {
+    expect({ ...r, maxEntry: 100, tfmMinProb: 0, tfmMinEdge: -100, moveFilter: 'off', moveThreshold: 200 }).toEqual(FROZEN_STRATEGY.rule);
+    expect([r.minMinute, r.maxMinute, r.maxEntry, r.tfmMinProb, r.tfmMinEdge, r.moveFilter, r.moveUnit, r.moveThreshold, r.moveWindowMin])
+      .toEqual([32, 59, 90, 50, 0.001, 'snapshot', 'usd', 50, 5]);
+    expect(r.stakePlan).toBe('flat'); // staking is not part of the rule
+  });
+  it('runs in parallel, frozen on the top of an hour after strategy 8, and is not an alert strategy', () => {
+    const t = new Date(FROZEN_STRATEGY_9.frozenAt);
+    expect([t.getUTCMinutes(), t.getUTCSeconds(), t.getUTCMilliseconds()]).toEqual([0, 0, 0]);
+    expect(t.getTime()).toBeGreaterThan(new Date(FROZEN_STRATEGY_8.frozenAt).getTime());
+    expect(FROZEN_STRATEGY_9.id).toBe('s9');
+    expect(FROZEN_STRATEGY_9.frozenUntil).toBeNull();
+    expect(STRATEGY_HISTORY).not.toContain(FROZEN_STRATEGY_9);
+    expect(Object.values(STRATEGIES_BY_ID)).not.toContain(FROZEN_STRATEGY_9);
+    expect(LAB_PRESETS.s9).toBe(FROZEN_STRATEGY_9);
+  });
+  it('needs minute 32+, a price up to 90c and a TimesFM probability of at least 50% with an edge above zero', () => {
+    expect(buildTrades([row({ hm: '04:32', ...up, tfm_prob_up: 85 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:31', ...up, tfm_prob_up: 85 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...up, up_1h_num: 90, tfm_prob_up: 95 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up, up_1h_num: 90.5, tfm_prob_up: 95 })], r)).toHaveLength(0);
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 80 })], r)).toHaveLength(0); // edge 0
+    expect(buildTrades([row({ hm: '04:40', ...up, tfm_prob_up: 80.1 })], r)).toHaveLength(1);
+    expect(buildTrades([row({ hm: '04:40', ...up })], r)).toHaveLength(0); // no TimesFM forecast
+    expect(buildTrades([row({ hm: '04:40', ...up, up_1h_num: 40, tfm_prob_up: 49.9 })], r)).toHaveLength(0); // below 50%
+  });
+  it('skips a snapshot after a move of more than $50 in 5 minutes and takes the next calm one', () => {
+    const at = (hm: string, spot: number, extra: object = {}) => row({ hm, ...up, tfm_prob_up: 90, spot_price: spot, ...extra });
+    // 04:35 jumps 80 from 04:30 -> skipped; 04:40 moved 20 -> trades
+    const fast = buildTrades([at('04:30', 70000, { score: 2 }), at('04:35', 70080), at('04:40', 70100)], r);
+    expect(fast.map((t) => t.minute)).toEqual([40]);
+    // a move of exactly 50 does not trip it
+    expect(buildTrades([at('04:30', 70000, { score: 2 }), at('04:35', 70050)], r).map((t) => t.minute)).toEqual([35]);
+    // only that snapshot is skipped, not the rest of the hour
+    expect(buildTrades([at('04:34', 70000, { score: 2 }), at('04:39', 70100), at('04:44', 70110)], r).map((t) => t.minute)).toEqual([44]);
   });
 });
 

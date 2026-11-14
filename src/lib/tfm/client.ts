@@ -2,13 +2,18 @@
 
 export const TFM_URL: string = process.env.TFM_URL || 'http://127.0.0.1:8002';
 
-export async function tfmHealth(timeoutMs = 1500): Promise<{ ok: boolean; model?: string }> {
+export async function tfmHealth(timeoutMs = 1500): Promise<{ ok: boolean; model?: string; maxContext?: number }> {
   try {
     const res = await fetch(`${TFM_URL}/health`, { signal: AbortSignal.timeout(timeoutMs), cache: 'no-store' });
     if (!res.ok) return { ok: false };
-    const body = (await res.json()) as { ok?: unknown; model?: unknown };
+    const body = (await res.json()) as { ok?: unknown; model?: unknown; max_context?: unknown };
     if (body?.ok !== true) return { ok: false };
-    return { ok: true, model: typeof body.model === 'string' ? body.model : undefined };
+    return {
+      ok: true,
+      model: typeof body.model === 'string' ? body.model : undefined,
+      // the service keeps only the last max_context points of a longer series (TFM_MAX_CONTEXT env of tfm/server.py)
+      maxContext: typeof body.max_context === 'number' ? body.max_context : undefined,
+    };
   } catch {
     return { ok: false };
   }

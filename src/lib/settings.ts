@@ -17,13 +17,16 @@ export const WORKER_NAMES: WorkerName[] = ['alerts', 'jev', 'bot'];
 
 export type BotWalletType = 'EOA' | 'POLY_PROXY' | 'POLY_GNOSIS_SAFE' | 'DEPOSIT_WALLET';
 // Frozen strategies the forward bridge can trade (BOT_STRATEGIES in lib/bot/forward): v2 = Frozen strategy 1,
-// s5 = Frozen strategy 1 + Optimised.
-export type BotForwardStrategy = 'v2' | 's5';
+// s5 = Frozen strategy 1 + Optimised, s8 / s9 = Frozen strategies 8 and 9 (need TimesFM forecasts in jev/tfm).
+export type BotForwardStrategy = 'v2' | 's5' | 's8' | 's9';
 // Which rule the Jev Telegram alert follows: a strategy, or whichever one the trading bot trades.
 export type JevAlertStrategy = 'v1' | 'v2' | 's2' | 's3' | 's4' | 's5' | 'bot';
 // How a buy is priced: a market-style buy capped at best ask + slippage, one that sweeps the book up to 0.99, or a limit
 // order N cents under the best ask that rests on the book until it fills or the hour is nearly over.
 export type BotOrderPriceMode = 'slippage' | 'market' | 'limit';
+// How much a forward-bridge buy stakes. fixed: bot.perTradeAmount every time. p4: bot.stakePercent of the wallet balance,
+// twice that percent after a lost trade, never above bot.stakeCap (see lib/bot/stake.ts).
+export type BotStakePlan = 'fixed' | 'p4';
 const WALLET_TYPES: BotWalletType[] = ['EOA', 'POLY_PROXY', 'POLY_GNOSIS_SAFE', 'DEPOSIT_WALLET'];
 
 export interface Settings {
@@ -53,7 +56,11 @@ export interface Settings {
   'bot.proxyAddress': string;
   'bot.rpcUrl': string;
   'bot.maxBudget': number;
+  'bot.budgetResetAt': number;
   'bot.perTradeAmount': number;
+  'bot.stakePlan': BotStakePlan;
+  'bot.stakePercent': number;
+  'bot.stakeCap': number;
   'bot.orderPriceMode': BotOrderPriceMode;
   'bot.limitOffsetCents': number;
   'bot.slippageCents': number;
@@ -180,7 +187,7 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
   'bot.forwardStrategy': {
     default: 's5',
     parse: v => {
-      if (v !== 'v2' && v !== 's5') throw new SettingError('must be v2 or s5');
+      if (v !== 'v2' && v !== 's5' && v !== 's8' && v !== 's9') throw new SettingError('must be v2, s5, s8 or s9');
       return v;
     },
     restarts: [],
@@ -233,7 +240,31 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
     restarts: [],
   },
   'bot.maxBudget': { default: 100, parse: numRange(1, 100_000), restarts: [] },
+  // The total budget cap counts only trades from this moment on (epoch milliseconds; 0 = count every trade). Setting it to the
+  // current time starts the cap from zero again without touching a single trade row: history, P&L and redeem still see them all.
+  'bot.budgetResetAt': {
+    default: 0,
+    parse: v => {
+      const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+      if (!Number.isInteger(n) || n < 0 || n > 8_640_000_000_000_000) throw new SettingError('must be 0 or a time in epoch milliseconds');
+      return n;
+    },
+    restarts: [],
+  },
   'bot.perTradeAmount': { default: 10, parse: numRange(1, 100_000), restarts: [] },
+  // Stake plan of the forward bridge. fixed keeps the amount above, so an update changes nothing until p4 is chosen.
+  // p4 stakes bot.stakePercent of the wallet balance (simulation mode: of bot.maxBudget), twice that percent after a lost
+  // trade, never more than bot.stakeCap. bot.perTradeAmount stays the amount when the balance cannot be read.
+  'bot.stakePlan': {
+    default: 'fixed',
+    parse: v => {
+      if (v !== 'fixed' && v !== 'p4') throw new SettingError('must be fixed or p4');
+      return v;
+    },
+    restarts: [],
+  },
+  'bot.stakePercent': { default: 10, parse: numRange(0.1, 100), restarts: [] },
+  'bot.stakeCap': { default: 800, parse: numRange(5, 100_000), restarts: [] },
   // How the buy order is priced: best ask + slippage (a hard worst price), market (sweep the book up to 0.99), or limit
   // (rest N cents under the best ask, see bot.limitOffsetCents).
   'bot.orderPriceMode': {

@@ -13,6 +13,17 @@ export type DedupeMode = "all" | "firstPerHour" | "firstPerHourDir";
 // beforeFilters: the hour's first raw signal is the trade; if it fails a filter the hour is skipped.
 export type PickOrder = "afterFilters" | "beforeFilters";
 export type TradeStatus = "WIN" | "LOSS" | "PENDING";
+// Fast-move filter. snapshot: skip a snapshot whose price moved more than the limit within the window.
+// restOfHour: after such a move, skip that snapshot and every later one in the same market hour.
+export type MoveFilterMode = "off" | "snapshot" | "restOfHour";
+export type MoveUnit = "usd" | "pct";
+// How the Strategy Lab sizes each trade. flat: `stake` every time (the default, and the only plan outside the Lab).
+// The others double the stake after every loss and go back to the base after a win:
+//   p1: the base stake never changes.
+//   p2: the base doubles each time the balance doubles from the bankroll (200 -> 400 at 2x), and halves again if the balance falls back.
+//   p3: like p2, but the base never goes back down.
+//   p4: a percentage of the current balance (stakePercent), double that percentage after a loss, never above stakeCap.
+export type StakePlan = "flat" | "p1" | "p2" | "p3" | "p4";
 
 export interface SnapshotRow {
   filename: string;
@@ -59,6 +70,7 @@ export interface SnapshotRow {
   tfm_prob_up?: number | null;
   consensus_agreement?: number | null;
   up_1h_num?: number | null;
+  spot_price?: number | null;
   market_slug?: string | null;
   market_outcome?: "UP" | "DOWN" | "PENDING" | null;
 }
@@ -97,11 +109,22 @@ export interface AnalysisConfig {
   // Conditions on any trade or snapshot field (lib/fieldFilters, fields in lib/snapshotFilterFields), tested with
   // the filters above. [] = off, as in every frozen rule.
   fieldFilters: FilterGroup[];
+  // Fast-move filter: the move of a snapshot is the largest |price change| against the earlier snapshots
+  // of the same coin taken within the last moveWindowMin minutes (plus MOVE_WINDOW_GRACE_MS for timer drift).
+  // With snapshots every 5 minutes and a 5-minute window, that is the change since the previous snapshot.
+  moveFilter: MoveFilterMode;
+  moveUnit: MoveUnit;
+  moveThreshold: number; // dollars or percent, by moveUnit; a move strictly above it trips the filter
+  moveWindowMin: number;
 
   dedupe: DedupeMode;
   pickOrder: PickOrder;
 
-  stake: number; // dollars per trade
+  stake: number; // dollars per trade (the base stake when stakePlan is not flat)
+  stakePlan: StakePlan; // Strategy Lab only; buildTrades ignores it
+  bankroll: number; // starting balance in dollars, used by the p1-p4 plans
+  stakePercent: number; // p4: percent of the current balance staked on a trade (twice that after a loss)
+  stakeCap: number; // p4: no stake above this many dollars
   slippageCents: number; // added to the quoted price
 }
 
@@ -130,9 +153,17 @@ export const DEFAULT_ANALYSIS_CONFIG: AnalysisConfig = {
   minEntry: 0,
   maxEntry: 100,
   fieldFilters: [],
+  moveFilter: "off",
+  moveUnit: "usd",
+  moveThreshold: 200,
+  moveWindowMin: 5,
   dedupe: "firstPerHourDir",
   pickOrder: "afterFilters",
   stake: 10,
+  stakePlan: "flat",
+  bankroll: 1000,
+  stakePercent: 10,
+  stakeCap: 800,
   slippageCents: 0,
 };
 
@@ -274,6 +305,40 @@ export const FROZEN_STRATEGY_7: FrozenStrategy = {
   checkpoints: [10, 20, 30, 50],
 };
 
+// An eighth parallel forward test, set by the user on 2026-11-12: strategy 1 (v2) with a later minute window, an entry
+// price cap, and TimesFM as a confirmer. The bot can trade it (setting bot.forwardStrategy): the forward bridge reads the
+// TimesFM forecast of each snapshot from jev/tfm, so it trades only where the TimesFM service writes forecasts (the
+// server has none as of 2026-11-12). Not an alert option: alert rows carry no TimesFM fields. Rows without a TimesFM
+// forecast cannot trade. Frozen on the top of an hour, so no forward row was seen.
+export const FROZEN_STRATEGY_8: FrozenStrategy = {
+  id: "s8",
+  name: "BTC · Jev + Kev + Span all agree · minute 34–59 · price ≤ 92¢ · TimesFM probability ≥ 50% and edge ≥ 0.001¢",
+  note: "Strategy 1 (v2) with: signal minute 34–59, quoted price of the side 0–92¢, TimesFM probability for the side bought at least 50%, and TimesFM probability minus that side's quoted price at least 0.001 cents (edges are rounded to 0.01, so in practice above zero). Everything else as v2: Jev score > 3.5 / < 0.5 at 90%+ score confidence, 3 of 3, first signal of the hour after filters. Set by the user, not by a search here; only the forward window counts.",
+  frozenAt: "2026-11-12T20:00:00.000Z", // 15:00 ET
+  frozenUntil: null,
+  rule: baseRule({ minMinute: 34, maxMinute: 59, minEntry: 0, maxEntry: 92, tfmMinProb: 50, tfmMinEdge: 0.001 }),
+  checkpoints: [10, 20, 30, 50],
+};
+
+// A ninth parallel forward test, set by the user on 2026-11-13: strategy 1 (v2) with TimesFM as a confirmer (probability of the
+// side at least 50% and its edge over the quoted price above zero), a price cap of 90c and a fast-move filter (a snapshot whose
+// price moved more than $50 in the last 5 minutes is skipped). Taken from the Strategy Lab file the user tuned on the same
+// 2026-09-24 .. 2026-11-12 data (241 trades, 92% won at 84c in-sample), so only the forward window counts. How much to stake is
+// not part of the rule: the Lab simulated a percentage-of-balance plan (P4, 20.1% of the balance, 2x after a loss, cap $800),
+// but the forward card uses the page stake and the bot uses its own stake settings.
+// The bot can trade it (setting bot.forwardStrategy); like s8 it needs TimesFM forecasts in jev/tfm and spot prices in the
+// snapshots, so it trades only where the TimesFM service runs (the server has none as of 2026-11-13). Not an alert option:
+// alert rows carry no TimesFM fields. Rows without a TimesFM forecast cannot trade. Frozen on the top of an hour.
+export const FROZEN_STRATEGY_9: FrozenStrategy = {
+  id: "s9",
+  name: "BTC · Jev + Kev + Span all agree · minute 32–59 · price ≤ 90¢ · TimesFM probability ≥ 50% and edge > 0 · skip snapshots after a $50 move in 5 min",
+  note: "Strategy 1 (v2) with: signal minute 32–59, quoted price of the side 0–90¢, TimesFM probability for the side bought at least 50%, TimesFM probability minus the quoted price of that side at least 0.001 cents (in practice above zero), and a fast-move filter: a snapshot is skipped when BTC moved more than $50 against any snapshot of the last 5 minutes (one minute of timer drift allowed). Everything else as v2: Jev score > 3.5 / < 0.5 at 90%+ score confidence, 3 of 3, first signal of the hour after filters. Set by the user from a Strategy Lab file tuned on the same history, so it is in-sample until forward rows show otherwise. Stake size is not part of the rule.",
+  frozenAt: "2026-11-13T05:00:00.000Z", // 00:00 ET
+  frozenUntil: null,
+  rule: baseRule({ minMinute: 32, maxMinute: 59, minEntry: 0, maxEntry: 90, tfmMinProb: 50, tfmMinEdge: 0.001, moveFilter: "snapshot", moveUnit: "usd", moveThreshold: 50, moveWindowMin: 5 }),
+  checkpoints: [10, 20, 30, 50],
+};
+
 // Every frozen strategy by id. The Jev alert (setting jev.alertStrategy) can follow any of them; the bot trades v2 or s5.
 // s7 is not listed: its rule needs TimesFM fields that alert rows do not carry, so an alert on it would never fire.
 export const STRATEGIES_BY_ID: Record<string, FrozenStrategy> = {
@@ -281,7 +346,7 @@ export const STRATEGIES_BY_ID: Record<string, FrozenStrategy> = {
 };
 
 // The ready-made rules the Strategy Lab offers as a start: every frozen strategy, including those that cannot drive an alert.
-export const LAB_PRESETS: Record<string, FrozenStrategy> = { ...STRATEGIES_BY_ID, s7: FROZEN_STRATEGY_7 };
+export const LAB_PRESETS: Record<string, FrozenStrategy> = { ...STRATEGIES_BY_ID, s7: FROZEN_STRATEGY_7, s8: FROZEN_STRATEGY_8, s9: FROZEN_STRATEGY_9 };
 
 export interface Trade {
   row: SnapshotRow;
@@ -296,6 +361,9 @@ export interface Trade {
   modelConf: number;
   agreeCount: number; // how many of Jev/Kev/Span point the same way as the signal
   priorOpposite: boolean; // an opposite-direction signal (any confidence) appeared earlier in this market hour
+  priceMove: number | null; // largest price change within moveWindowMin, in moveUnit; null without an earlier snapshot
+  fastMoveBlocked: boolean; // the fast-move filter (moveFilter) blocks this snapshot
+  stake?: number; // dollars staked on this trade; set only by a Lab stake plan (otherwise every trade uses the config stake)
   quote: number | null; // quoted price of the chosen side, 0-1
   entry: number | null; // quote + slippage, 0-1
   tfmProb: number | null; // TimesFM P(side traded), 0-100, one decimal; null without a forecast
@@ -448,7 +516,41 @@ export function filterBaseRows<T extends SnapshotRow>(rows: T[], cfg: AnalysisCo
   });
 }
 
-function buildCandidate(r: SnapshotRow, cfg: AnalysisConfig, priorDirs: Set<Dir>): Trade | null {
+// Snapshot timers drift by a few seconds and sometimes skip; this lets a snapshot 5:30 after the last one still
+// count for a 5-minute window.
+export const MOVE_WINDOW_GRACE_MS = 60_000;
+
+// Largest |price change| between `r` and the earlier rows of `history` (same coin, oldest first) inside the window.
+// Returns dollars or percent of the earlier price, by cfg.moveUnit; null when no earlier price is in the window.
+export function priceMoveOf(
+  r: SnapshotRow,
+  history: SnapshotRow[],
+  cfg: Pick<AnalysisConfig, "moveUnit" | "moveWindowMin">,
+): number | null {
+  const t = rowTime(r);
+  const spot = r.spot_price;
+  if (!t || spot == null || !Number.isFinite(spot)) return null;
+  const from = t - cfg.moveWindowMin * 60_000 - MOVE_WINDOW_GRACE_MS;
+  let best: number | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    const ht = rowTime(h);
+    if (!ht || ht >= t) continue;
+    if (ht < from) break;
+    const ref = h.spot_price;
+    if (ref == null || !Number.isFinite(ref) || ref <= 0) continue;
+    const move = cfg.moveUnit === "pct" ? (Math.abs(spot - ref) / ref) * 100 : Math.abs(spot - ref);
+    if (best == null || move > best) best = move;
+  }
+  return best == null ? null : Number(best.toFixed(cfg.moveUnit === "pct" ? 4 : 2));
+}
+
+function buildCandidate(
+  r: SnapshotRow,
+  cfg: AnalysisConfig,
+  priorDirs: Set<Dir>,
+  move: { priceMove: number | null; blocked: boolean } = { priceMove: null, blocked: false },
+): Trade | null {
   const sig = detectSignal(r, cfg);
   if (!sig) return null;
   const p = parseEtTime(r.et_time);
@@ -474,6 +576,8 @@ function buildCandidate(r: SnapshotRow, cfg: AnalysisConfig, priorDirs: Set<Dir>
     modelConf: sig.conf,
     agreeCount: agreeCount(r, sig.dir),
     priorOpposite: priorDirs.has(sig.dir === "UP" ? "DOWN" : "UP"),
+    priceMove: move.priceMove,
+    fastMoveBlocked: move.blocked,
     quote,
     entry,
     tfmProb,
@@ -495,6 +599,7 @@ function passesFilters(t: Trade, cfg: AnalysisConfig, fieldTest: ((t: Trade) => 
   if (cfg.tfmMinProb > 0 && !(t.tfmProb != null && t.tfmProb >= cfg.tfmMinProb)) return false;
   if (cfg.tfmMinEdge > -100 && !(t.tfmEdge != null && t.tfmEdge >= cfg.tfmMinEdge)) return false;
   if (cfg.noPriorOpposite && t.priorOpposite) return false;
+  if (cfg.moveFilter !== "off" && t.fastMoveBlocked) return false;
   if (t.minute < cfg.minMinute || t.minute > cfg.maxMinute) return false;
   const priceFilterOn = cfg.minEntry > 0 || cfg.maxEntry < 100;
   if (priceFilterOn) {
@@ -530,11 +635,26 @@ export function buildTrades(baseRows: SnapshotRow[], cfg: AnalysisConfig): Trade
   // Signal directions seen so far in each market hour, at any confidence (feeds noPriorOpposite).
   const anyConf = { ...cfg, bullishMinConf: 0, bearishMinConf: 0, bullishMaxConf: 100, bearishMaxConf: 100 };
   const seen = new Map<string, Set<Dir>>();
+  // Fast-move filter state: earlier rows per coin, and market hours that already had a fast move.
+  const moveOn = cfg.moveFilter !== "off";
+  const byCoin = new Map<string, SnapshotRow[]>();
+  const trippedHours = new Set<string>();
   const candidates: Trade[] = [];
   for (const r of sortChrono(baseRows)) {
     const key = marketKey(r);
     const dirs = seen.get(key) ?? new Set<Dir>();
-    const t = buildCandidate(r, cfg, dirs);
+    let move = { priceMove: null as number | null, blocked: false };
+    if (moveOn) {
+      const coin = (r.coin || r.filename.split("_")[0] || "").toUpperCase();
+      const history = byCoin.get(coin) ?? [];
+      const priceMove = priceMoveOf(r, history, cfg);
+      const fast = priceMove != null && priceMove > cfg.moveThreshold;
+      if (fast && cfg.moveFilter === "restOfHour") trippedHours.add(key);
+      move = { priceMove, blocked: fast || (cfg.moveFilter === "restOfHour" && trippedHours.has(key)) };
+      history.push(r);
+      byCoin.set(coin, history);
+    }
+    const t = buildCandidate(r, cfg, dirs, move);
     if (t) candidates.push(t);
     const raw = detectSignal(r, anyConf);
     if (raw) seen.set(key, dirs.add(raw.dir));
@@ -548,7 +668,7 @@ export function buildTrades(baseRows: SnapshotRow[], cfg: AnalysisConfig): Trade
 
 export function computeMetrics(trades: Trade[], stake: number): Metrics {
   let wins = 0, losses = 0, pending = 0, pnl = 0, lateCount = 0;
-  let invPriceSum = 0, priceSum = 0, priced = 0;
+  let invPriceSum = 0, priceSum = 0, priced = 0, staked = 0;
   let equity = 0, peak = 0, maxDrawdown = 0, lossStreak = 0, maxLossStreak = 0;
   for (const t of trades) {
     if (t.minute >= LATE_MINUTE) lateCount++;
@@ -559,6 +679,7 @@ export function computeMetrics(trades: Trade[], stake: number): Metrics {
       invPriceSum += 1 / t.entry;
       priceSum += t.entry;
       priced++;
+      staked += t.stake ?? stake;
     }
     pnl += t.pnl;
     equity += t.pnl;
@@ -583,7 +704,7 @@ export function computeMetrics(trades: Trade[], stake: number): Metrics {
     avgEntry: priced ? priceSum / priced : null,
     edge: winRate != null && breakEven != null ? winRate - breakEven : null,
     pnl,
-    roi: priced && stake > 0 ? pnl / (stake * priced) : null,
+    roi: priced && staked > 0 ? pnl / staked : null,
     evPerTrade: resolved ? pnl / resolved : null,
     maxDrawdown,
     maxLossStreak,

@@ -60,7 +60,7 @@ body:has([data-jev-curves]) header > div, body:has([data-jev-curves]) footer p {
 .cw-series-option { display:flex; align-items:center; gap:6px; min-height:32px; padding:3px 4px; font-size:11px; color:var(--cw-muted); cursor:pointer; }
 .cw-series-option.is-selected { color:var(--cw-text); }
 .cw-series-option > span { flex:1; }
-.cw-series-option > small { color:var(--cw-faint); font-size:10.5px; }
+.cw-series-option > small { color:var(--cw-faint); font-size:11px; }
 .cw-series-option > i,.cw-readings i { width:12px; border-top-width:2px; display:inline-block; flex-shrink:0; }
 .cw-catalog-note { border-top:1px solid var(--cw-line); color:var(--cw-faint); font-size:11px; padding:12px 4px 0; margin-top:10px !important; }
 .cw-main { display:flex; flex-direction:column; gap:20px; min-width:0; }
@@ -153,7 +153,7 @@ body:has([data-jev-curves]) header > div, body:has([data-jev-curves]) footer p {
 .cw-json-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.6; background:#111014; padding:16px; }
 @media (max-width:1200px) {
   body:has([data-jev-curves]) main { padding-inline:20px; }
-  .cw-scope { grid-template-columns:80px 110px 1fr 1fr 75px 75px; }
+  .cw-scope { grid-template-columns:80px 110px 1fr 1fr 90px 90px; }
   .cw-fresh { grid-column:1 / -1; justify-content:flex-start; padding-inline:0; }
   .cw-fresh > span { display:flex; gap:10px; align-items:center; }
   .cw-workspace { grid-template-columns:230px minmax(0,1fr); gap:16px; }
@@ -191,7 +191,8 @@ body:has([data-jev-curves]) header > div, body:has([data-jev-curves]) footer p {
   .cw-scope { grid-template-columns:1fr 1fr; gap:10px 12px; }
   .cw-fresh { justify-content:space-between; }
   .cw-fresh > span { flex:1; gap:10px; flex-wrap:wrap; }
-  .cw-scope .cw-field:nth-child(5),.cw-scope .cw-field:nth-child(6) { display:none; }
+  .cw-scope > .cw-field:nth-child(n+3) { display:none; }
+  .cw-scope[data-time-open="true"] > .cw-field:nth-child(n+3) { display:flex; }
   .cw-chart-section { padding:14px 10px; }
   .cw-chart-heading { flex-wrap:wrap; gap:8px; }
   .cw-chart-heading h2 { font-size:14px; }
@@ -233,6 +234,12 @@ body:has([data-jev-curves]) header > div, body:has([data-jev-curves]) footer p {
   .cw-table-scroll { overflow:visible; }
   .cw-table { font-size:9px; }
   .cw-main > section { break-inside:avoid; }
-  .cw-json-dialog { display:none; }
+  .cw-json-dialog,[aria-label="بهینه‌سازی شرط‌های روی منحنی"] { display:none; }
 }
 @media (prefers-reduced-motion:reduce) { .cw-app * { animation:none !important; transition:none !important; } }
+
+.cw-filter-explanation { padding:0 18px 14px; color:var(--cw-faint); font-size:12px; }
+.cw-execution-options { border-top:1px solid var(--cw-line); padding-top:12px; }
+.cw-execution-options > summary { list-style:none; display:flex; align-items:center; gap:8px; color:var(--cw-muted); font-size:12px; }
+.cw-execution-options > .cw-signal-top { margin-top:14px; }
+.cw-execution-options > p { color:var(--cw-faint); font-size:11px; margin-top:12px; }

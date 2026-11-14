@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CURVE_BY_ID, CURVE_DEFINITIONS, CURVE_PRESETS, buildCurvePoints, curveEtParts, curveExtent, curveRowTime, filterCurveRows, sanitizeCurveIds, sortCurveRows, withCurveScoreBounds, type CurveRow } from "@/lib/jevCurves";
+import { CURVE_BY_ID, CURVE_DEFINITIONS, CURVE_PRESETS, buildCurvePoints, curveEtParts, curveExtent, curveRowTime, filterCurveRows, sanitizeCurveIds, sortCurveRows, withCurveScoreBounds, withoutCurveScoreBounds, type CurveRow } from "@/lib/jevCurves";
 import { DEFAULT_ANALYSIS_CONFIG, buildTrades, type AnalysisConfig } from "@/lib/signalAnalysis";
 
 const row = (minute: number, extra: Partial<CurveRow> = {}): CurveRow => ({
@@ -119,9 +119,29 @@ describe("per-direction curve score caps", () => {
     ] };
     const before = structuredClone(config);
     const composed = withCurveScoreBounds(config, 3.8, 0.2);
-    expect(composed.fieldFilters).toHaveLength(2);
+    expect(composed.fieldFilters).toHaveLength(3);
     expect(buildTrades([scored(0, 3.5, 80), scored(5, 3.5, 95), scored(10, 0.3, 80), scored(15, 0.3, 95), scored(20, 4, 95)], composed).map(trade => trade.minute)).toEqual([5, 15]);
     expect(config).toEqual(before);
     expect(withCurveScoreBounds(composed, 3.8, 0.2)).toEqual(composed);
+  });
+  it("restores editable user price filters and incomplete groups without retaining synthetic caps", () => {
+    const config: AnalysisConfig = { ...cfg, fieldFilters: [
+      { id: "pending", conditions: [{ id: "not-ready", field: "trade_conf", op: "between", a: null, b: null, values: [], enabled: true }] },
+      { id: "price", conditions: [{ id: "price-minimum", field: "trade_price", op: "gte", a: 90, b: null, values: [], enabled: true }] },
+    ] };
+    const original = structuredClone(config);
+    const bounded = withCurveScoreBounds(config, 3.8, 0.2);
+    const before = structuredClone(bounded);
+    const editable = withoutCurveScoreBounds(bounded);
+    expect(editable).toEqual(original);
+    expect(editable.fieldFilters.flatMap(group => group.conditions).every(condition => !condition.id.startsWith("__jev_curve_score_bound_"))).toBe(true);
+    const rows = [
+      scored(0, 3.5), scored(5, 3.5), scored(10, 3.9), scored(15, 0.3), scored(20, 0.1),
+    ].map((data, index) => ({ ...data, up_1h_num: [95, 80, 95, 5, 5][index] }));
+    expect(buildTrades(rows, bounded).map(trade => trade.minute)).toEqual([0, 15]);
+    expect(buildTrades(rows, withCurveScoreBounds(editable, 3.8, 0.2))).toEqual(buildTrades(rows, bounded));
+    expect(bounded).toEqual(before);
+    expect(config).toEqual(original);
+    expect(withoutCurveScoreBounds(withCurveScoreBounds(cfg, 4, 0)).fieldFilters).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import {
   type AnalysisConfig,
   type Metrics,
   type SnapshotRow,
+  type StakePlan,
   type Trade,
 } from './signalAnalysis';
 
@@ -84,11 +85,36 @@ export function sanitizeLabConfig(input: unknown): AnalysisConfig {
     tfmMinEdge: number('tfmMinEdge', -100, 100),
     noPriorOpposite: flag('noPriorOpposite'),
     minMinute, maxMinute, minEntry, maxEntry, fieldFilters,
+    moveFilter: choice(raw.moveFilter, ['off', 'snapshot', 'restOfHour'], defaults.moveFilter),
+    moveUnit: choice(raw.moveUnit, ['usd', 'pct'], defaults.moveUnit),
+    moveThreshold: number('moveThreshold', 0, 1_000_000),
+    moveWindowMin: number('moveWindowMin', 1, 60, true),
     dedupe: choice(raw.dedupe, ['all', 'firstPerHour', 'firstPerHourDir'], defaults.dedupe),
     pickOrder: choice(raw.pickOrder, ['afterFilters', 'beforeFilters'], defaults.pickOrder),
     stake: number('stake', 0.01, 1_000_000),
+    stakePlan: choice(raw.stakePlan, ['flat', 'p1', 'p2', 'p3', 'p4'], defaults.stakePlan),
+    bankroll: number('bankroll', 1, 100_000_000),
+    stakePercent: number('stakePercent', 0.1, 100),
+    stakeCap: number('stakeCap', 1, 100_000_000),
     slippageCents: number('slippageCents', 0, 100),
   };
+}
+
+/** What a stake plan (p1-p3) did to the balance over the run; null for the flat plan. */
+export interface StakingSummary {
+  plan: StakePlan;
+  start: number;
+  final: number;
+  peak: number;
+  lowest: number;
+  maxStake: number;
+  maxDrawdownPct: number; // of the running peak balance, 0-1
+  // p1-p3: at some trade the balance could not pay the plan's base stake (ruinedAtTrade = that trade, 1-based).
+  // p4 never runs out (a percentage of the balance), so there it means the balance fell to half the bankroll or less
+  // (ruinedAtTrade = the trade after which it did).
+  ruined: boolean;
+  ruinedAtTrade: number | null;
+  skipped: number; // trades with a zero stake because the balance was gone
 }
 
 export interface LabRun {
@@ -96,6 +122,51 @@ export interface LabRun {
   trades: Trade[];
   metrics: Metrics;
   missingPriceCount: number;
+  staking: StakingSummary | null;
+}
+
+const MAX_STAKE_TIER = 30;
+
+/**
+ * Sizes every trade, oldest first, by cfg.stakePlan and re-computes its P&L. After a loss the next stake is double the
+ * base; after a win it is the base. The base is cfg.stake, doubled once per doubling of the balance from cfg.bankroll
+ * (p2 follows the balance up and down, p3 never goes back down, p1 never changes). p4 ignores cfg.stake: it stakes
+ * cfg.stakePercent of the current balance, twice that after a loss, and never more than cfg.stakeCap. A stake never
+ * exceeds the balance. Pending trades take the stake the plan would use but do not move the balance.
+ */
+export function applyStakePlan(trades: Trade[], cfg: Pick<AnalysisConfig, 'stakePlan' | 'stake' | 'bankroll' | 'stakePercent' | 'stakeCap'>): { trades: Trade[]; staking: StakingSummary | null } {
+  if (cfg.stakePlan === 'flat') return { trades, staking: null };
+  const tierOf = (balance: number) => Math.min(MAX_STAKE_TIER, Math.max(0, Math.floor(Math.log2(Math.max(balance, 1) / cfg.bankroll) + 1e-9)));
+  let balance = cfg.bankroll, peak = balance, lowest = balance, maxTier = 0, prevLost = false;
+  let maxStake = 0, maxDrawdownPct = 0, skipped = 0, ruinedAtTrade: number | null = null;
+  const out = trades.map((trade, index) => {
+    let planned: number;
+    if (cfg.stakePlan === 'p4') {
+      planned = Math.min((cfg.stakePercent / 100) * balance * (prevLost ? 2 : 1), cfg.stakeCap);
+    } else {
+      const tier = cfg.stakePlan === 'p1' ? 0 : cfg.stakePlan === 'p2' ? tierOf(balance) : Math.max(maxTier, tierOf(balance));
+      maxTier = Math.max(maxTier, tier);
+      const base = cfg.stake * 2 ** tier;
+      if (ruinedAtTrade == null && balance < base) ruinedAtTrade = index + 1;
+      planned = base * (prevLost ? 2 : 1);
+    }
+    const stake = Math.min(planned, Math.max(balance, 0));
+    if (stake <= 0.01) { skipped++; return { ...trade, stake: 0, pnl: 0 }; }
+    maxStake = Math.max(maxStake, stake);
+    if (trade.status === 'PENDING') return { ...trade, stake, pnl: 0 };
+    const pnl = tradePnl(trade.status, trade.entry, stake);
+    balance += pnl;
+    prevLost = trade.status === 'LOSS';
+    peak = Math.max(peak, balance);
+    lowest = Math.min(lowest, balance);
+    maxDrawdownPct = Math.max(maxDrawdownPct, (peak - balance) / peak);
+    if (cfg.stakePlan === 'p4' && ruinedAtTrade == null && balance <= cfg.bankroll / 2) ruinedAtTrade = index + 1;
+    return { ...trade, stake, pnl };
+  });
+  return {
+    trades: out,
+    staking: { plan: cfg.stakePlan, start: cfg.bankroll, final: balance, peak, lowest, maxStake, maxDrawdownPct, ruined: ruinedAtTrade != null, ruinedAtTrade, skipped },
+  };
 }
 
 /** Keep unknown/zero/impossible entry prices out of both P&L and the win-rate denominator. */
@@ -111,7 +182,8 @@ export function runLab(rows: SnapshotRow[], config: AnalysisConfig): LabRun {
     // buildTrades has a legacy .999 cap. Lab results use the exact payable price, even near $1.
     trades.push({ ...trade, entry, pnl: tradePnl(trade.status, entry, cfg.stake) });
   }
-  return { rows: baseRows, trades, metrics: computeMetrics(trades, cfg.stake), missingPriceCount: candidates.length - trades.length };
+  const sized = applyStakePlan(trades, cfg);
+  return { rows: baseRows, trades: sized.trades, metrics: computeMetrics(sized.trades, cfg.stake), missingPriceCount: candidates.length - trades.length, staking: sized.staking };
 }
 
 export interface LabSplit {

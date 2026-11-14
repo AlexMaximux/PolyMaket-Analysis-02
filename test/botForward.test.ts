@@ -9,7 +9,7 @@ import { enqueueNotification, deliverNotifications, notificationStatus, collectN
 import { runOutcomeCycle } from '../src/lib/bot/outcomes';
 import { initRedemptions } from '../src/lib/bot/redeemDb';
 import { walletIdentity } from '../src/lib/bot/live';
-import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, type SnapshotRow } from '../src/lib/signalAnalysis';
+import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, FROZEN_STRATEGY_8, FROZEN_STRATEGY_9, type SnapshotRow } from '../src/lib/signalAnalysis';
 import { BOT_STRATEGIES, botStrategy } from '../src/lib/bot/forward';
 import { setBotSetting } from '../src/lib/bot/db';
 import type { TradeResult } from '../src/lib/bot/types';
@@ -70,7 +70,11 @@ describe('forward strategy choice', () => {
 
   it('defaults to Frozen strategy 1 + Optimised and accepts only the strategies the bot can trade', () => {
     expect(botStrategy()).toBe(FROZEN_STRATEGY_5);
-    expect(BOT_STRATEGIES.map(s => s.id)).toEqual(['v2', 's5']);
+    expect(BOT_STRATEGIES.map(s => s.id)).toEqual(['v2', 's5', 's8', 's9']);
+    expect(applySettingChanges({ 'bot.forwardStrategy': 's9' }).ok).toBe(true);
+    expect(botStrategy()).toBe(FROZEN_STRATEGY_9);
+    expect(applySettingChanges({ 'bot.forwardStrategy': 's8' }).ok).toBe(true);
+    expect(botStrategy()).toBe(FROZEN_STRATEGY_8);
     expect(applySettingChanges({ 'bot.forwardStrategy': 'v2' }).ok).toBe(true);
     expect(botStrategy()).toBe(FROZEN_STRATEGY);
     expect(applySettingChanges({ 'bot.forwardStrategy': 's3' }).ok).toBe(false);

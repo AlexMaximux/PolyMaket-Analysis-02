@@ -3,8 +3,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getDb } from '../db';
 import { getSetting } from '../settings';
-import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from '../signalAnalysis';
+import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, FROZEN_STRATEGY_8, FROZEN_STRATEGY_9, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from '../signalAnalysis';
 import { forwardSnapshotRow } from '../forwardSnapshot';
+import { loadTfmStore, tfmRowFields } from '../tfm/store';
 import { buildHourlyEtSlug, executeSignal, reconcileRequest } from './executor';
 import { findRequest, pendingRequests } from './ledger';
 import { enqueueNotification, collectNotifications, deliverNotifications } from './notifications';
@@ -13,8 +14,10 @@ import { getBotSetting, setBotSetting } from './db';
 import type { SignalRequest, TradeResult } from './types';
 
 export const FORWARD_MAX_AGE_MS = 120_000;
-// The strategies setting bot.forwardStrategy can pick. Each may use only the fields forwardSnapshotRow fills in.
-export const BOT_STRATEGIES: FrozenStrategy[] = [FROZEN_STRATEGY, FROZEN_STRATEGY_5];
+// The strategies setting bot.forwardStrategy can pick. Each may use only the fields readRows fills in:
+// forwardSnapshotRow plus the TimesFM fields from jev/tfm and the spot price (s8 and s9 need the forecasts, s9 the spot price
+// for its fast-move filter; without forecasts they never trade).
+export const BOT_STRATEGIES: FrozenStrategy[] = [FROZEN_STRATEGY, FROZEN_STRATEGY_5, FROZEN_STRATEGY_8, FROZEN_STRATEGY_9];
 export function botStrategy(): FrozenStrategy | null {
   return BOT_STRATEGIES.find(s => s.id === getSetting('bot.forwardStrategy')) ?? null;
 }
@@ -34,11 +37,15 @@ function readRows(now: number): SnapshotRow[] {
   const dir = path.join(process.cwd(), 'jev', 'history');
   if (!fs.existsSync(dir)) return [];
   const rows: SnapshotRow[] = [];
+  // TimesFM forecasts by snapshot file name, as the analysis API joins them; empty where no TimesFM service runs.
+  const tfm = loadTfmStore();
   for (const name of fs.readdirSync(dir)) {
     if (!/^btc_.*\.json$/i.test(name)) continue;
     const file = path.join(dir, name);
     if (fs.statSync(file).mtimeMs < now - 2 * 3600_000) continue;
-    rows.push(forwardSnapshotRow(name, JSON.parse(fs.readFileSync(file, 'utf8'))));
+    const content = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const spot = Number(content.spot_price);
+    rows.push({ ...forwardSnapshotRow(name, content), spot_price: Number.isFinite(spot) && content.spot_price != null ? spot : null, ...tfmRowFields(tfm.get(name)) });
   }
   return rows;
 }

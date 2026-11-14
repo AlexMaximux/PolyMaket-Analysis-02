@@ -20,6 +20,8 @@ import {
   FROZEN_STRATEGY_4,
   FROZEN_STRATEGY_5,
   FROZEN_STRATEGY_7,
+  FROZEN_STRATEGY_8,
+  FROZEN_STRATEGY_9,
   STRATEGY_HISTORY,
   LATE_MINUTE,
   MINUTE_BUCKETS,
@@ -705,6 +707,8 @@ export default function CloudAnalysisPage() {
   const frozen4 = useMemo(() => forwardOf(FROZEN_STRATEGY_4), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
   const frozen5 = useMemo(() => forwardOf(FROZEN_STRATEGY_5), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
   const frozen7 = useMemo(() => forwardOf(FROZEN_STRATEGY_7), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen8 = useMemo(() => forwardOf(FROZEN_STRATEGY_8), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frozen9 = useMemo(() => forwardOf(FROZEN_STRATEGY_9), [rows, cfg.stake, cfg.slippageCents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Each closed/current rule in STRATEGY_HISTORY, scored only on its own forward window
   // [frozenAt, frozenUntil). A superseded rule's window is frozen in time, so its result never
@@ -1096,6 +1100,30 @@ export default function CloudAnalysisPage() {
                 before={frozen7.before}
                 after={frozen7.after}
                 afterTrades={frozen7.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_8}
+                title="Frozen strategy 8: forward test (v2 · minute 34–59 · price ≤ 92¢ · TimesFM ≥ 50% and edge > 0)"
+                before={frozen8.before}
+                after={frozen8.after}
+                afterTrades={frozen8.afterTrades}
+                history={[]}
+                stake={cfg.stake}
+                slippage={cfg.slippageCents}
+                budget={budget}
+                onBudget={setBudget}
+              />
+              <FrozenCard
+                strategy={FROZEN_STRATEGY_9}
+                title="Frozen strategy 9: forward test (v2 · minute 32–59 · price ≤ 90¢ · TimesFM ≥ 50% and edge > 0 · skip after a $50 move in 5 min)"
+                before={frozen9.before}
+                after={frozen9.after}
+                afterTrades={frozen9.afterTrades}
                 history={[]}
                 stake={cfg.stake}
                 slippage={cfg.slippageCents}

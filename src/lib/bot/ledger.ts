@@ -33,7 +33,8 @@ export function pendingRequests(simulated: boolean): BotRequest[] {
 export function reservedBudget(simulated: boolean): number {
   return pendingRequests(simulated).reduce((sum, row) => sum + row.amount, 0);
 }
-export function reserveRequest(signal: SignalRequest): { row: BotRequest; duplicate: boolean } {
+/** `amount` is the stake decided for this signal (lib/bot/stake.ts); without it the configured fixed amount is reserved. */
+export function reserveRequest(signal: SignalRequest, amount?: number): { row: BotRequest; duplicate: boolean } {
   init();
   const db = getDb();
   // Initialize settings before BEGIN; a rejected reservation rolls back its transaction.
@@ -48,12 +49,14 @@ export function reserveRequest(signal: SignalRequest): { row: BotRequest; duplic
     if (!getSetting('bot.enabled')) throw new Error('ربات غیرفعال است (bot disabled)');
     const limits = getBotBudgetLimits();
     if (pendingRequests(limits.simulationMode).length) throw new Error('سفارش قبلی در حال اجرا یا نامشخص است؛ ابتدا وضعیت آن را بررسی کنید.');
-    if (getTotalSpent(limits.simulationMode) + limits.perTrade > limits.maxBudget + 0.000001) {
+    const stake = amount ?? limits.perTrade;
+    if (!Number.isFinite(stake) || stake <= 0) throw new Error('مبلغ معامله نامعتبر است.');
+    if (getTotalSpent(limits.simulationMode) + stake > limits.maxBudget + 0.000001) {
       throw new Error('سقف بودجه کافی نیست.');
     }
     const now = Date.now();
     db.prepare(`INSERT INTO bot_requests (request_id, fingerprint, state, simulated, amount, created_at, updated_at)
-      VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)`).run(signal.requestId, fingerprint, Number(limits.simulationMode), limits.perTrade, now, now);
+      VALUES (?, ?, 'RESERVED', ?, ?, ?, ?)`).run(signal.requestId, fingerprint, Number(limits.simulationMode), stake, now, now);
     return { row: findRequest(signal.requestId!)!, duplicate: false };
   }).immediate();
 }

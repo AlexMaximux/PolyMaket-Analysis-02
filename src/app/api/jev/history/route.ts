@@ -3,7 +3,8 @@ import fs from 'fs';
 import { forwardSnapshotRow } from '@/lib/forwardSnapshot';
 import path from 'path';
 import { updateMarketResolutions, getResolutionsMap } from '@/lib/marketResolver';
-import { loadTfmStore, tfmRowFields } from '@/lib/tfm/store';
+import { listTfmContexts, loadTfmStore, tfmContextOf, tfmRowFields } from '@/lib/tfm/store';
+import { TFM_MAX_CONTEXT } from '@/lib/tfm/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,7 +71,9 @@ export async function GET(req: Request) {
     }
 
     // TimesFM forecasts by snapshot file name (jev/tfm/forecasts.jsonl); a CL file uses the forecast of its original.
-    const tfmStore = loadTfmStore();
+    // tfmContext=N picks a store built with another context length (backfill --context=N); default is the live one.
+    const tfmContext = tfmContextOf(searchParams.get('tfmContext')) ?? TFM_MAX_CONTEXT;
+    const tfmStore = loadTfmStore(undefined, tfmContext);
 
     const files = fileNames.map(f => {
       try {
@@ -230,7 +233,7 @@ export async function GET(req: Request) {
       }
     }).filter((f): f is NonNullable<typeof f> => f !== null && typeof (f as any).et_time === 'string');
 
-    return NextResponse.json({ count: files.length, files });
+    return NextResponse.json({ count: files.length, files, tfmContext, tfmContexts: listTfmContexts() });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

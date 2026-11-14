@@ -3,8 +3,9 @@ import { ensureTfmService } from './service';
 import { fetchMinuteBars } from './klines';
 import { windowForecast, windowsAt } from './math';
 import { contextAsOf, openAt } from './series';
+import { appendTfmPath, roundSig, type TfmPathRecord } from './paths';
 import { appendTfmRecords } from './store';
-import { TFM_HORIZON, TFM_MIN_CONTEXT, type MinuteBar, type TfmRecord, type TfmWindowForecast, type TfmWindowKey } from './types';
+import { TFM_HORIZON, TFM_MAX_CONTEXT, TFM_MIN_CONTEXT, type MinuteBar, type TfmRecord, type TfmWindowForecast, type TfmWindowKey } from './types';
 
 export interface SnapshotInput {
   file: string;
@@ -19,6 +20,7 @@ export interface SnapshotInput {
 const MIN_MS = 60_000;
 const BARS_BACK_MIN = 1030;
 const LIVE_TIMEOUT_MS = 10_000;
+const PATH_HISTORY = 60; // context prices kept in a saved path (what the TFM tab draws)
 
 const posNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
 
@@ -46,6 +48,11 @@ export function snapshotInputOf(file: string, content: any): SnapshotInput | nul
   };
 }
 
+/** Fewest points a series needs to be forecast: TFM_MIN_CONTEXT, or the whole context when that is shorter. */
+export function minContextFor(context: number): number {
+  return Math.min(TFM_MIN_CONTEXT, context);
+}
+
 /**
  * One forecast per input, computed only from bars that had closed by the input's time plus its own spot price.
  * `barsOf` gets the lower-case coin (a key of TFM_SYMBOLS). Inputs with fewer than TFM_MIN_CONTEXT points are
@@ -56,12 +63,15 @@ export async function forecastSnapshots(
   barsOf: (coin: string) => MinuteBar[],
   source: 'live' | 'backfill',
   forecast: typeof tfmForecast = tfmForecast,
+  onPath?: (path: TfmPathRecord) => void,
+  context: number = TFM_MAX_CONTEXT, // 1-minute points sent to the model (backfill --context); live is always the default
 ): Promise<TfmRecord[]> {
   const items: { input: SnapshotInput; bars: MinuteBar[]; series: number[] }[] = [];
+  const minPoints = minContextFor(context);
   for (const input of inputs) {
     const bars = barsOf(input.coin.toLowerCase());
-    const series = contextAsOf(bars, input.tsMs, input.spot);
-    if (series.length >= TFM_MIN_CONTEXT) items.push({ input, bars, series });
+    const series = contextAsOf(bars, input.tsMs, input.spot, context);
+    if (series.length >= minPoints) items.push({ input, bars, series });
   }
   if (items.length === 0) return [];
   const res = await forecast(items.map((i) => i.series), TFM_HORIZON);
@@ -71,6 +81,18 @@ export async function forecastSnapshots(
   items.forEach(({ input, bars, series }, idx) => {
     const quantiles = res.quantiles[idx];
     const last = series[series.length - 1];
+    if (onPath) {
+      onPath({
+        file: input.file,
+        coin: input.coin.toUpperCase(),
+        ts: new Date(input.tsMs).toISOString(),
+        model: res.model,
+        last: roundSig(last),
+        history: series.slice(-PATH_HISTORY).map(roundSig),
+        mean: (res.mean[idx] ?? []).map(roundSig),
+        q: quantiles.map((row) => row.map(roundSig)),
+      });
+    }
     const w = windowsAt(input.tsMs);
     const given: Record<TfmWindowKey, number | null> = { h1: input.open1h, m15: input.open15m, m5: input.open5m };
     const win = (k: TfmWindowKey): TfmWindowForecast | null => {
@@ -110,9 +132,12 @@ export async function recordTfmForSnapshot(file: string, content: any): Promise<
       if ((await ensureTfmService()) !== 'ready') return 'skipped';
       const bars = await fetchMinuteBars(input.coin, input.tsMs - BARS_BACK_MIN * MIN_MS, input.tsMs);
       if (cancelled) return 'skipped';
-      const records = await forecastSnapshots([input], () => bars, 'live');
+      const paths: TfmPathRecord[] = [];
+      const records = await forecastSnapshots([input], () => bars, 'live', tfmForecast, (p) => paths.push(p));
       if (cancelled || records.length === 0) return 'skipped';
       appendTfmRecords(records);
+      // the full price path of the TFM tab, kept for later study of how the forecast behaved (jev/tfm/paths/)
+      for (const p of paths) appendTfmPath(p);
       return 'saved';
     };
     const timeout = new Promise<'skipped'>((resolve) => {

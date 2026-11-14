@@ -74,11 +74,11 @@ export function getBotBudgetLimits(): { maxBudget: number; perTrade: number; sim
 export function getTotalSpent(simulated = getSetting('bot.simulationMode')): number {
   initializeBotTables();
   const db = getDb();
+  // Only trades at or after bot.budgetResetAt count against the cap (0 = all of them); older rows stay in the table untouched.
   const row = db.prepare(`
-    SELECT COALESCE(SUM(amount_usd), 0) AS total FROM bot_trades WHERE status = ?
-  `).get(simulated ? 'SIMULATED' : 'FILLED') as { total: number };
+    SELECT COALESCE(SUM(amount_usd), 0) AS total FROM bot_trades WHERE status = ? AND timestamp >= ?
+  `).get(simulated ? 'SIMULATED' : 'FILLED', getSetting('bot.budgetResetAt')) as { total: number };
   return row.total;
-
 }
 
 export function recordBotTrade(trade: Omit<TradeRecord, 'id'>): number {

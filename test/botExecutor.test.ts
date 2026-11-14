@@ -96,6 +96,41 @@ describe('fixed BTC 1H execution', () => {
       expect(r.amountUsd).toBe(10); expect(r.success).toBe(true); expect(r.tokenId).toBe('tok-up');
     }
   });
+  it('P4: a forward signal in paper mode stakes the percentage of the budget cap; other signals keep the fixed amount', async () => {
+    enable(false, 10, 500);
+    expect(applySettingChanges({ 'bot.stakePlan': 'p4', 'bot.stakePercent': 10, 'bot.stakeCap': 800 }, db).ok).toBe(true);
+    const forward = await executeSignal({ ...signal('forward:p4-a'), source: 'signal' });
+    expect(forward.success).toBe(true);
+    expect(forward.amountUsd).toBe(50);
+    expect(findRequest('forward:p4-a')?.amount).toBe(50);
+    const manual = await executeSignal({ ...signal('manual-p4'), source: 'api' });
+    expect(manual.amountUsd).toBe(10);
+    expect(getTotalSpent()).toBe(60);
+  });
+  it('P4: the total budget cap still refuses a stake that does not fit', async () => {
+    enable(false, 10, 60);
+    expect(applySettingChanges({ 'bot.stakePlan': 'p4', 'bot.stakePercent': 50, 'bot.stakeCap': 800 }, db).ok).toBe(true);
+    expect((await executeSignal({ ...signal('forward:p4-b'), source: 'signal' })).amountUsd).toBe(30);
+    expect((await executeSignal({ ...signal('forward:p4-c'), source: 'signal' })).amountUsd).toBe(30);
+    const third = await executeSignal({ ...signal('forward:p4-d'), source: 'signal' });
+    expect(third.success).toBe(false);
+    expect(third.error).toMatch(/بودجه/);
+    expect(getTotalSpent()).toBe(60);
+  });
+  it('P4: a real order from a wallet whose balance cannot be read uses the fixed amount and says so', async () => {
+    enable(true, 12, 500);
+    expect(applySettingChanges({ 'bot.stakePlan': 'p4', 'bot.stakePercent': 10 }, db).ok).toBe(true);
+    const fwd = executeSignal({ ...signal('forward:p4-live'), source: 'signal' });
+    await vi.runAllTimersAsync();
+    const r = await fwd;
+    expect(r.success).toBe(true);
+    expect(findRequest('forward:p4-live')?.amount).toBe(12); // the reserved amount; the mocked fill is $10
+    expect(postOrder).toHaveBeenCalledTimes(1);
+    const notice = db.prepare("SELECT message FROM bot_notifications WHERE event = 'stake-fallback:forward:p4-live'").all() as { message: string }[];
+    expect(notice).toHaveLength(1);
+    expect(notice[0].message).toContain('$12');
+    expect(notice[0].message).toContain('Deposit Wallet');
+  });
   it('atomically blocks concurrent requests and refuses overspending', async () => {
     enable(false, 10, 10);
     const [a, b] = await Promise.all([executeSignal(signal('a')), executeSignal(signal('b'))]);

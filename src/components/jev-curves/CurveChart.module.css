@@ -7,7 +7,7 @@
 .legend > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .chart svg { display: block; overflow: hidden; touch-action: pan-y; user-select: none; }
 .chart svg:focus-visible { outline: 1px solid #80b5e5; outline-offset: 2px; }
-.axis { fill: #b4b0ba; font: 11px var(--curve-latin, sans-serif); font-variant-numeric: tabular-nums; }
+.axis { fill: #b4b0ba; font: 11px var(--curves-latin, sans-serif); font-variant-numeric: tabular-nums; }
 .emptyLabel { fill: #aaa6b0; font-size: 12px; }
 .referenceLegend { display: flex; flex-wrap: wrap; gap: 5px 16px; color: #b4b0ba; font-size: 11px; margin-block: 3px 2px; }
 .referenceLegend > span { display: inline-flex; align-items: center; gap: 5px; }
