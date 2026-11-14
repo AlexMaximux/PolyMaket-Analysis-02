@@ -20,7 +20,7 @@ export type BotWalletType = 'EOA' | 'POLY_PROXY' | 'POLY_GNOSIS_SAFE' | 'DEPOSIT
 // s5 = Frozen strategy 1 + Optimised, s8 / s9 = Frozen strategies 8 and 9 (need TimesFM forecasts in jev/tfm).
 export type BotForwardStrategy = 'v2' | 's5' | 's8' | 's9';
 // Which rule the Jev Telegram alert follows: a strategy, or whichever one the trading bot trades.
-export type JevAlertStrategy = 'v1' | 'v2' | 's2' | 's3' | 's4' | 's5' | 'bot';
+export type JevAlertStrategy = 'v1' | 'v2' | 's2' | 's3' | 's4' | 's5' | 's8' | 's9' | 'bot';
 // How a buy is priced: a market-style buy capped at best ask + slippage, one that sweeps the book up to 0.99, or a limit
 // order N cents under the best ask that rests on the book until it fills or the hour is nearly over.
 export type BotOrderPriceMode = 'slippage' | 'market' | 'limit';
@@ -138,7 +138,7 @@ export const SETTINGS: { [K in SettingKey]: SettingDef<Settings[K]> } = {
   'jev.alertStrategy': {
     default: 'v2',
     parse: v => {
-      if (!['v1', 'v2', 's2', 's3', 's4', 's5', 'bot'].includes(v as string)) throw new SettingError('must be a strategy id (v1, v2, s2, s3, s4, s5) or bot');
+      if (!['v1', 'v2', 's2', 's3', 's4', 's5', 's8', 's9', 'bot'].includes(v as string)) throw new SettingError('must be a strategy id (v1, v2, s2, s3, s4, s5, s8, s9) or bot');
       return v as JevAlertStrategy;
     },
     restarts: [],

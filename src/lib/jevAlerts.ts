@@ -4,8 +4,23 @@ import { loadEnvConfig } from '@next/env';
 import { sendTelegram } from './alerts';
 import { getSetting } from './settings';
 import { getDb } from './db';
-import { STRATEGIES_BY_ID, FROZEN_STRATEGY, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from './signalAnalysis';
+import { ALERT_STRATEGIES, FROZEN_STRATEGY, buildTrades, filterBaseRows, ruleNeedsTfm, type FrozenStrategy, type SnapshotRow } from './signalAnalysis';
 import { forwardSnapshotRow } from './forwardSnapshot';
+import { loadTfmStore, tfmRowFields } from './tfm/store';
+import type { TfmRecord } from './tfm/types';
+
+type TfmStore = Map<string, TfmRecord>;
+
+/**
+ * A snapshot as the strategies see it. With a TimesFM store (rules that use TimesFM) it also carries the forecast fields
+ * and the spot price, exactly as the forward bridge builds its rows, so an s8 / s9 alert decides like the bot does.
+ */
+function alertRow(name: string, content: any, tfm: TfmStore | null): SnapshotRow {
+  const row = forwardSnapshotRow(name, content);
+  if (!tfm) return row;
+  const spot = Number(content?.spot_price);
+  return { ...row, spot_price: Number.isFinite(spot) && content?.spot_price != null ? spot : null, ...tfmRowFields(tfm.get(name)) };
+}
 
 try {
   loadEnvConfig(process.cwd());
@@ -102,7 +117,7 @@ export function alertStrategy(): FrozenStrategy {
   try {
     const choice = getSetting('jev.alertStrategy');
     const id = choice === 'bot' ? getSetting('bot.forwardStrategy') : choice;
-    return STRATEGIES_BY_ID[id] ?? FROZEN_STRATEGY;
+    return ALERT_STRATEGIES[id] ?? FROZEN_STRATEGY;
   } catch {
     return FROZEN_STRATEGY;
   }
@@ -120,7 +135,7 @@ export function alertStrategyLabel(strategy: FrozenStrategy): string {
  * The earlier snapshot rows of the same coin and market hour, from jev/history. Strategies that look at the hour so far
  * (the first signal of the hour, a flip earlier in the hour) need them to decide about the record in hand.
  */
-export function readSameHourRows(record: any, filename: string): SnapshotRow[] {
+export function readSameHourRows(record: any, filename: string, tfm: TfmStore | null = null): SnapshotRow[] {
   try {
     const m = String(record?.et_time || '').match(/^(\d{4}-\d{2}-\d{2})[ _T](\d{2})/);
     if (!m) return [];
@@ -131,7 +146,7 @@ export function readSameHourRows(record: any, filename: string): SnapshotRow[] {
     const rows: SnapshotRow[] = [];
     for (const name of fs.readdirSync(dir)) {
       if (!name.startsWith(prefix) || !name.endsWith('.json') || name === filename) continue;
-      try { rows.push(forwardSnapshotRow(name, JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))); } catch { /* half-written */ }
+      try { rows.push(alertRow(name, JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')), tfm)); } catch { /* half-written */ }
     }
     return rows;
   } catch {
@@ -146,9 +161,9 @@ export function readSameHourRows(record: any, filename: string): SnapshotRow[] {
  * signal of the hour", "3 of 3 agree", the Solar filter, "skip flipped hours" and the minute window all mean what they
  * mean everywhere else.
  */
-export function evaluateJevRecordSignal(record: any, strategy: FrozenStrategy = FROZEN_STRATEGY, priorRows: SnapshotRow[] = []): JevSignalResult {
+export function evaluateJevRecordSignal(record: any, strategy: FrozenStrategy = FROZEN_STRATEGY, priorRows: SnapshotRow[] = [], tfm: TfmStore | null = null): JevSignalResult {
   const filename = String(record?.filename || '__current__');
-  const current = forwardSnapshotRow(filename, record);
+  const current = alertRow(filename, record, tfm);
   const rows = [...priorRows.filter(r => r.filename !== filename), current];
   const trade = buildTrades(filterBaseRows(rows, strategy.rule), strategy.rule).find(t => t.row.filename === filename);
   if (!trade) return { isSignal: false };
@@ -370,11 +385,19 @@ export function formatTelegramSignalMessage(
  */
 export async function checkAndSendJevSignalAlert(
   record: any,
-  filename: string
+  filename: string,
+  // 'saved': called when the record is written; 'tfm': called again once its TimesFM forecast is saved (scripts/jev.ts).
+  // A rule with a TimesFM condition (s8, s9) is decided only in the 'tfm' call, every other rule only in the 'saved' one.
+  phase: 'saved' | 'tfm' = 'saved'
 ): Promise<{ sent: boolean; reason?: string }> {
   try {
     const strategy = alertStrategy();
-    const signal = evaluateJevRecordSignal(record, strategy, readSameHourRows(record, filename));
+    const needsTfm = ruleNeedsTfm(strategy.rule);
+    if (needsTfm !== (phase === 'tfm')) return { sent: false, reason: needsTfm ? 'Waiting for the TimesFM forecast' : 'Decided when the record was saved' };
+    const tfm = needsTfm ? loadTfmStore() : null;
+    // The saved record has no filename field; the TimesFM store is keyed by it, so give the row its real name.
+    const named = record?.filename ? record : { ...record, filename };
+    const signal = evaluateJevRecordSignal(named, strategy, readSameHourRows(record, filename, tfm), tfm);
     if (!signal.isSignal || !signal.type || signal.score == null || signal.confidence == null) {
       return { sent: false, reason: 'Does not match strategy criteria' };
     }

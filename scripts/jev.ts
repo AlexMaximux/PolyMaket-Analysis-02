@@ -8,7 +8,7 @@ import {
   saveHistoricalJevRecord,
   getLatestHistoricalFile,
 } from '../src/lib/jevSnapshot';
-import { initializeAlertTracker } from '../src/lib/jevAlerts';
+import { checkAndSendJevSignalAlert, initializeAlertTracker } from '../src/lib/jevAlerts';
 import { saveClRecord } from '../src/lib/clSnapshot';
 import { askClFile } from '../src/lib/clAsk';
 import { updateMarketResolutions } from '../src/lib/marketResolver';
@@ -49,7 +49,7 @@ async function startLoop() {
       const snapshot = await generateJevSnapshot(coin);
       console.log(`[${new Date().toISOString()}] [${coin.toUpperCase()}] Querying OpenRouter models (Jev, Kev-4b, Span-01)...`);
       const multi = await callMultiModelDecisions(snapshot);
-      const { filename, skippedDuplicate } = saveHistoricalJevRecord(snapshot, multi);
+      const { filename, fullRecord, skippedDuplicate } = saveHistoricalJevRecord(snapshot, multi);
       if (!skippedDuplicate) {
         const jevDir = multi.jev ? `${multi.jev.direction} (${multi.jev.score})` : 'N/A';
         const kevDir = multi.kev ? `${multi.kev.direction} (${multi.kev.score})` : 'N/A';
@@ -60,9 +60,12 @@ async function startLoop() {
 
         // TimesFM forecast of this snapshot (jev/tfm/forecasts.jsonl). Not awaited: it never throws and gives up
         // after 10 s, so it cannot delay or stop the loop. Does nothing when the local TimesFM service is not up.
+        // Then the Jev alert for a rule with a TimesFM condition (s8, s9), which could not be decided at save time.
+        // Without a forecast (service down) such a rule finds no signal, exactly as the bot would.
         void recordTfmForSnapshot(filename, snapshot).then((r) => {
           if (r === 'saved') console.log(`[${new Date().toISOString()}] [${coin.toUpperCase()}] TFM forecast saved for ${filename}`);
-        });
+          return checkAndSendJevSignalAlert(fullRecord, filename, 'tfm');
+        }).catch((err) => console.error('[JEV ALERT] TimesFM alert check error:', err));
 
         // CL copy (jev/cl/): the same snapshot plus the Claude fair value, asked again with those inputs.
         // Runs after the original is saved and logged; a failure here must never stop the collector.

@@ -348,6 +348,15 @@ export const STRATEGIES_BY_ID: Record<string, FrozenStrategy> = {
 // The ready-made rules the Strategy Lab offers as a start: every frozen strategy, including those that cannot drive an alert.
 export const LAB_PRESETS: Record<string, FrozenStrategy> = { ...STRATEGIES_BY_ID, s7: FROZEN_STRATEGY_7, s8: FROZEN_STRATEGY_8, s9: FROZEN_STRATEGY_9 };
 
+// The rules a Jev alert can follow (setting jev.alertStrategy): every frozen strategy above plus s8 and s9, whose TimesFM
+// and fast-move filters the alert check fills in from jev/tfm and the snapshots' spot price (see jevAlerts.ts).
+export const ALERT_STRATEGIES: Record<string, FrozenStrategy> = { ...STRATEGIES_BY_ID, s8: FROZEN_STRATEGY_8, s9: FROZEN_STRATEGY_9 };
+
+/** A rule with a TimesFM condition cannot be decided before the snapshot's TimesFM forecast is saved. */
+export function ruleNeedsTfm(rule: AnalysisConfig): boolean {
+  return rule.tfmMinProb > 0 || rule.tfmMinEdge > -100;
+}
+
 export interface Trade {
   row: SnapshotRow;
   coin: string;
