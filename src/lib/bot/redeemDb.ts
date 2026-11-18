@@ -25,6 +25,9 @@ export function initRedemptions() {
   const columns = getDb().prepare('PRAGMA table_info(bot_redemptions)').all() as { name: string }[];
   if (!columns.some(c => c.name === 'tx_id')) getDb().exec('ALTER TABLE bot_redemptions ADD COLUMN tx_id TEXT');
 }
+export function isBtcHourlySlug(slug: string): boolean {
+  return slug.startsWith('btc-updown-1h-') || slug.startsWith('bitcoin-up-or-down-');
+}
 export function discoverRedemptions(wallet: string, signer: string, holder: string) {
   initRedemptions();
   // Only confirmed real bot purchases with a known original wallet; never guess legacy ownership.
@@ -36,7 +39,7 @@ export function discoverRedemptions(wallet: string, signer: string, holder: stri
   getDb().transaction(() => {
     for (const r of rows) {
       if ((/^\d+$/.test(r.token_id) || /^0x[0-9a-fA-F]{64}$/.test(r.token_id)) &&
-          r.slug.startsWith('bitcoin-up-or-down-') && r.shares > 0) {
+          isBtcHourlySlug(r.slug) && r.shares > 0) {
         put.run(wallet, signer.toLowerCase(), holder, r.token_id, r.slug, r.shares, Date.now());
       }
     }

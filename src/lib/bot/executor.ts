@@ -69,8 +69,14 @@ export function orderPriceCap(bestAsk: number, mode: BotOrderPriceMode, slippage
   return Math.min(0.999, Math.max(bestAsk, wanted));
 }
 
-/** Build the hourly slug according to ET (Eastern Time) convention */
+/** Build the 1H Polymarket slug using the hour's Unix start timestamp (format used since 2026-11-18T00:00Z). */
 export function buildHourlyEtSlug(coin = 'btc', targetDate = new Date()): string {
+  const hourStartSec = Math.floor(targetDate.getTime() / 3_600_000) * 3600;
+  return `${coin.toLowerCase()}-updown-1h-${hourStartSec}`;
+}
+
+/** Legacy ET-formatted hourly slug used by Polymarket prior to 2026-11-18T00:00Z. */
+export function buildLegacyHourlyEtSlug(coin = 'btc', targetDate = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     year: 'numeric',
@@ -90,26 +96,40 @@ export function buildHourlyEtSlug(coin = 'btc', targetDate = new Date()): string
   return `${coinWord}-up-or-down-${month}-${day}-${year}-${hour12}${dayPeriod}-et`;
 }
 
+export function isCurrentHourlySlug(slug: string, coin = 'btc', targetDate = new Date()): boolean {
+  return slug === buildHourlyEtSlug(coin, targetDate) || slug === buildLegacyHourlyEtSlug(coin, targetDate);
+}
+
 /** Fetch live market info for coin and timeframe (e.g. 1H BTC) */
 export async function resolveActiveMarket(coin = 'btc', timeframe = '1H', outcome: TradeOutcome = 'UP'): Promise<ActiveMarketInfo | null> {
   if (!['btc', 'btcupdow', 'btcupdown'].includes(coin.toLowerCase()) || timeframe.toUpperCase() !== '1H') return null;
   const normalizedCoin = 'btc';
-  const slug = buildHourlyEtSlug(normalizedCoin);
+  const candidateSlugs = [buildHourlyEtSlug(normalizedCoin), buildLegacyHourlyEtSlug(normalizedCoin)];
 
-  // 1. Try Gamma API directly
+  // 1. Try Gamma API directly (timestamped 1H slug first, then legacy ET slug)
   try {
-    const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(10_000),
-      headers: { 'User-Agent': 'PolymarketPulseBot/1.0' },
-    });
-    if (res.ok) {
+    let slug = '';
+    let event: { slug?: string; title?: string; markets?: any[] } | null = null;
+    for (const candidate of candidateSlugs) {
+      const res = await fetch(`https://gamma-api.polymarket.com/events?slug=${candidate}`, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(10_000),
+        headers: { 'User-Agent': 'PolymarketPulseBot/1.0' },
+      });
+      if (!res.ok) continue;
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        const event = data.find(e => e.slug === slug);
-        if (!event) return null;
-        const market = event.markets?.[0];
-        if (market) {
+        const matched = data.find(e => e.slug === candidate);
+        if (matched) {
+          slug = candidate;
+          event = matched;
+          break;
+        }
+      }
+    }
+    if (event) {
+      const market = event.markets?.[0];
+      if (market) {
           let tokens: string[] = [];
           try {
             tokens = Array.isArray(market.clobTokenIds) ? market.clobTokenIds : JSON.parse(market.clobTokenIds || '[]');
@@ -163,7 +183,6 @@ export async function resolveActiveMarket(coin = 'btc', timeframe = '1H', outcom
             selectedBestAsk,
             minimumOrderSize: Number.isFinite(minimumOrderSize) && minimumOrderSize! > 0 ? minimumOrderSize : null,
           };
-        }
       }
     }
   } catch {
@@ -437,7 +456,7 @@ function assertStillAllowed(row: BotRequest, market: ActiveMarketInfo, identity:
     throw new Error('تنظیمات معامله تغییر کرد؛ درخواست متوقف شد.');
   }
   if (getTotalSpent(!!row.simulated) + row.amount > limits.maxBudget + 0.000001) throw new Error('بودجه کاهش یافته است.');
-  if (Date.parse(market.endDate) <= Date.now() || market.slug !== buildHourlyEtSlug('btc')) throw new Error('ساعت این بازار پایان یافته است.');
+  if (Date.parse(market.endDate) <= Date.now() || !isCurrentHourlySlug(market.slug, 'btc')) throw new Error('ساعت این بازار پایان یافته است.');
 }
 
 /** Fixed-size BTC 1H BUY only. Requests are durably reserved before any network operation. */

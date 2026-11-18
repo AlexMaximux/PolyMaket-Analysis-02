@@ -270,10 +270,11 @@ export async function GET(request: Request) {
 
   // ---- Polymarket events (constructed slugs, hour/15m/5m) ----
   const { year, month, day, h12, ampm } = etParts(now);
-  const genericHourSlug = `${cfg.hourWord}-up-or-down-${month}-${day}-${year}-${h12}${ampm}-et`;
+  const hourSlug = `${cfg.slugPrefix}-1h-${hourStartSec}`;
+  const legacyHourSlug = `${cfg.hourWord}-up-or-down-${month}-${day}-${year}-${h12}${ampm}-et`;
 
   const [m1h, m15, m5, n15, n5] = await Promise.all([
-    eventBySlug(genericHourSlug),
+    eventBySlug(hourSlug).then(e => e ?? eventBySlug(legacyHourSlug)),
     eventBySlug(`${cfg.slugPrefix}-15m-${win15Sec}`),
     eventBySlug(`${cfg.slugPrefix}-5m-${win5Sec}`),
     eventBySlug(`${cfg.slugPrefix}-15m-${next15Sec}`),

@@ -127,4 +127,16 @@ describe('automatic redemption worker', () => {
     for (let i = 0; i < 4; i++) { await cycle(); await cycle(); clock += 301_000; }
     expect(chain.prepare).toHaveBeenCalledTimes(3); expect(redemption(1).state).toBe('FAILED');
   });
+  it('discovers both timestamped btc-updown-1h and legacy bitcoin-up-or-down slugs', () => {
+    db.prepare(`INSERT INTO bot_requests(request_id,fingerprint,state,simulated,amount,created_at,updated_at,token_id,slug,wallet,result)
+      VALUES('new-1','{}','FILLED',0,10,0,0,'1111','btc-updown-1h-1794970800',?,?)`).run(walletIdentity(), JSON.stringify({ shares: 20 }));
+    db.prepare(`INSERT INTO bot_requests(request_id,fingerprint,state,simulated,amount,created_at,updated_at,token_id,slug,wallet,result)
+      VALUES('old-1','{}','FILLED',0,10,0,0,'2222','bitcoin-up-or-down-november-17-2026-6pm-et',?,?)`).run(walletIdentity(), JSON.stringify({ shares: 15 }));
+    db.prepare(`INSERT INTO bot_requests(request_id,fingerprint,state,simulated,amount,created_at,updated_at,token_id,slug,wallet,result)
+      VALUES('other-1','{}','FILLED',0,10,0,0,'3333','eth-updown-1h-1794970800',?,?)`).run(walletIdentity(), JSON.stringify({ shares: 10 }));
+    const cfg = getBotWalletConfig();
+    discoverRedemptions(walletIdentity(), cfg.signerAddress!, cfg.address!);
+    const slugs = (db.prepare('SELECT slug FROM bot_redemptions ORDER BY token_id').all() as { slug: string }[]).map(r => r.slug);
+    expect(slugs).toEqual(['btc-updown-1h-1794970800', 'bitcoin-up-or-down-november-17-2026-6pm-et']);
+  });
 });

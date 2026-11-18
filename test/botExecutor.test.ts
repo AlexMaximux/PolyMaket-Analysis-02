@@ -5,7 +5,7 @@ import * as dbModule from '../src/lib/db';
 import * as live from '../src/lib/bot/live';
 import * as geo from '../src/lib/bot/geo';
 import { applySettingChanges } from '../src/lib/settings';
-import { executeSignal, getBotWalletConfig, reconcileRequest, MAX_ATTEMPTS, buildHourlyEtSlug, orderPriceCap, describeOrderError, marketBuyAmountsValid, signFittingMarketBuy } from '../src/lib/bot/executor';
+import { executeSignal, getBotWalletConfig, reconcileRequest, MAX_ATTEMPTS, buildHourlyEtSlug, buildLegacyHourlyEtSlug, isCurrentHourlySlug, resolveActiveMarket, orderPriceCap, describeOrderError, marketBuyAmountsValid, signFittingMarketBuy } from '../src/lib/bot/executor';
 import { getRecentTrades, getTotalSpent, initializeBotTables } from '../src/lib/bot/db';
 import { findRequest, pendingRequests, reservedBudget } from '../src/lib/bot/ledger';
 
@@ -355,5 +355,33 @@ describe('market buy amount decimals', () => {
   });
   it('gives up instead of sending an order the exchange would reject', async () => {
     await expect(signFittingMarketBuy(async () => ({ makerAmount: '9995000', takerAmount: '1' }), 1, 5)).rejects.toThrow(/سفارشی ارسال نشد/);
+  });
+});
+
+describe('hourly 1H slug format', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+  it('builds timestamped 1H slugs and legacy ET slugs', () => {
+    const d = new Date('2026-11-18T03:55:00Z');
+    expect(buildHourlyEtSlug('btc', d)).toBe('btc-updown-1h-1794970800');
+    expect(buildLegacyHourlyEtSlug('btc', d)).toBe('bitcoin-up-or-down-november-17-2026-10pm-et');
+    expect(isCurrentHourlySlug('btc-updown-1h-1794970800', 'btc', d)).toBe(true);
+    expect(isCurrentHourlySlug('bitcoin-up-or-down-november-17-2026-10pm-et', 'btc', d)).toBe(true);
+    expect(isCurrentHourlySlug('btc-updown-1h-1794967200', 'btc', d)).toBe(false);
+  });
+  it('resolveActiveMarket falls back to the legacy ET slug when the timestamped slug is absent', async () => {
+    const legacy = buildLegacyHourlyEtSlug('btc');
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes(legacy)) {
+        return new Response(JSON.stringify([{ slug: legacy, title: 'BTC Legacy', markets: [{
+          clobTokenIds: '["tok-up","tok-down"]', outcomes: '["Up","Down"]', acceptingOrders: true, closed: false,
+          endDate: new Date(Date.now() + 3600_000).toISOString(),
+        }] }]));
+      }
+      return new Response('[]');
+    }));
+    vi.spyOn(ClobClient.prototype, 'getOrderBook').mockResolvedValue({ asks: [{ price: '0.6', size: '50' }], bids: [] } as never);
+    const m = await resolveActiveMarket('btc', '1H', 'UP');
+    expect(m?.slug).toBe(legacy);
+    expect(m?.selectedTokenId).toBe('tok-up');
   });
 });

@@ -6,7 +6,7 @@ import { getSetting } from '../settings';
 import { FROZEN_STRATEGY, FROZEN_STRATEGY_5, FROZEN_STRATEGY_8, FROZEN_STRATEGY_9, buildTrades, filterBaseRows, type FrozenStrategy, type SnapshotRow } from '../signalAnalysis';
 import { forwardSnapshotRow } from '../forwardSnapshot';
 import { loadTfmStore, tfmRowFields } from '../tfm/store';
-import { buildHourlyEtSlug, executeSignal, reconcileRequest } from './executor';
+import { buildHourlyEtSlug, buildLegacyHourlyEtSlug, executeSignal, reconcileRequest } from './executor';
 import { findRequest, pendingRequests } from './ledger';
 import { enqueueNotification, collectNotifications, deliverNotifications } from './notifications';
 import { walletBalanceLine, withBalanceLine } from './balance';
@@ -66,7 +66,11 @@ export async function runForwardCycle(
     setBotSetting('forward.strategy', strategy.id);
   }
   const gate = getDb().prepare('SELECT armed_at FROM bot_forward_gate WHERE id=1').get() as { armed_at: number };
-  const signal = selectForwardSignal(rows ?? readRows(Date.now()), Date.now(), gate.armed_at, buildHourlyEtSlug('btc'), strategy);
+  const scanRows = rows ?? readRows(Date.now());
+  const now = Date.now();
+  const signal =
+    selectForwardSignal(scanRows, now, gate.armed_at, buildHourlyEtSlug('btc'), strategy) ??
+    selectForwardSignal(scanRows, now, gate.armed_at, buildLegacyHourlyEtSlug('btc'), strategy);
   setBotSetting('forward.lastScan', String(Date.now()));
   if (!signal || findRequest(signal.requestId!)) return;
   // Persist the event BEFORE executing. A crash here skips an order rather than placing it late.
